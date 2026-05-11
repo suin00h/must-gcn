@@ -1,0 +1,29 @@
+# data / weights (kept in shared /data/, not in repo)
+data/
+weights/
+*.pkl
+*.pt
+*.pth
+*.npz
+
+# logs / runs
+lightning_logs/
+wandb/
+runs/
+outputs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ipynb_checkpoints/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# private design / notes
+multiview-har-design.md
