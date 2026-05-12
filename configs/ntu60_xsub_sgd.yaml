@@ -1,0 +1,49 @@
+# MUST-GCN · NTU60 X-Sub · SGD-Nesterov · CTR-GCN-faithful schedule (65 epochs)
+#
+# Mirrors the CTR-GCN paper recipe exactly.  Reported in the paper as the
+# "best-of-two" optimisation alternative; SGD-Nesterov sometimes squeezes
+# +0.3–0.7% over AdamW on pure skeleton GCNs, at the cost of more
+# hyperparameter sensitivity in the attention layers.
+
+# --- data
+train_split: xsub_train
+val_split:   xsub_val
+batch_size:  64
+num_workers: 8
+window_size: 64
+max_person:  2
+
+# --- model
+num_class:    60
+num_point:    17
+num_views:    3
+graph:        graph.coco17.Graph
+base_channel: 64
+num_heads:    4
+drop_out:     0.0
+attn_dropout: 0.0
+
+# --- loss
+aux_weight: 0.3
+
+# --- optimisation (CTR-GCN paper defaults)
+optimizer:    sgd
+base_lr:      0.1
+weight_decay: 4.0e-4
+
+# --- schedule
+max_epochs:    65
+warmup_epochs: 5
+step_epochs:   [35, 55]
+lr_decay_rate: 0.1
+grad_clip:     1.0
+
+# --- trainer
+gpus:      1
+precision: bf16-mixed
+log_dir:   ./lightning_logs
+
+# --- WandB
+wandb_project: MUST-GCN
+wandb_name:    ntu60-xsub-sgd-65ep
+wandb_tags:    [ntu60, xsub, sgd, 65ep, baseline]

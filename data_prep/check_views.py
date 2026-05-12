@@ -7,12 +7,18 @@ that requires all 3 views at inference (X-Sub protocol).
 """
 
 import argparse
+import os
 import pickle
 import re
 from collections import Counter, defaultdict
 
 
 PAT = re.compile(r'^S(\d{3})C(\d{3})P(\d{3})R(\d{3})A(\d{3})$')
+
+DEFAULT_PKL = os.path.join(
+    os.environ.get('DATA_ROOT', 'data'),
+    'ntu-rgbd', 'processed', 'hrnet', 'ntu60_hrnet.pkl',
+)
 
 
 def parse(name: str):
@@ -50,7 +56,8 @@ def coverage(split_name: str, sample_names: list[str]) -> None:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--pkl', default='/data/3dpose/ntu-rgbd/processed/hrnet/ntu60_hrnet.pkl')
+    p.add_argument('--pkl', default=DEFAULT_PKL,
+                   help='path to a PYSKL HRNet pkl (default: $DATA_ROOT/ntu-rgbd/processed/hrnet/ntu60_hrnet.pkl)')
     args = p.parse_args()
 
     with open(args.pkl, 'rb') as f:

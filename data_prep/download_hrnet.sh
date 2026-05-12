@@ -8,7 +8,13 @@
 
 set -e
 
-OUT_DIR="${OUT_DIR:-/data/3dpose/ntu-rgbd/processed/hrnet}"
+# Default to <project>/data/ntu-rgbd/processed/hrnet.  Override with
+#   DATA_ROOT=/path/to/data  bash data_prep/download_hrnet.sh
+# or
+#   OUT_DIR=/path/to/dir     bash data_prep/download_hrnet.sh
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/data}"
+OUT_DIR="${OUT_DIR:-$DATA_ROOT/ntu-rgbd/processed/hrnet}"
 mkdir -p "$OUT_DIR"
 cd "$OUT_DIR"
 

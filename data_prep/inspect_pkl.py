@@ -1,14 +1,21 @@
 """Inspect a PYSKL HRNet pkl: print top-level structure, splits, and one sample.
 
 Usage:
-    python data_prep/inspect_pkl.py /data/3dpose/ntu-rgbd/processed/hrnet/ntu60_hrnet.pkl
+    python data_prep/inspect_pkl.py <path-to-pkl>
+    python data_prep/inspect_pkl.py     # uses $DATA_ROOT/ntu-rgbd/processed/hrnet/ntu60_hrnet.pkl
 """
 
+import os
 import pickle
 import sys
-from pprint import pprint
 
 import numpy as np
+
+
+DEFAULT_PKL = os.path.join(
+    os.environ.get('DATA_ROOT', 'data'),
+    'ntu-rgbd', 'processed', 'hrnet', 'ntu60_hrnet.pkl',
+)
 
 
 def main(path: str) -> None:
@@ -53,5 +60,4 @@ def main(path: str) -> None:
 
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else
-         '/data/3dpose/ntu-rgbd/processed/hrnet/ntu60_hrnet.pkl')
+    main(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PKL)

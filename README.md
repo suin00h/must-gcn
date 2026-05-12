@@ -1,4 +1,6 @@
 # MUST-GCN
+![Pose](https://img.shields.io/badge/SkeletonPose-4E56C0?style=flat-square&logo=fastlane&logoColor=8388d2&labelColor=212030)
+![HAR](https://img.shields.io/badge/ActionRecognition-D13A4F?style=flat-square&logo=odysee&logoColor=da6172&labelColor=212030)
 
 **Mu**lti-view **S**patio-**T**emporal GCN — multi-view 2D skeleton action recognition with cross-view attention.
 
@@ -27,6 +29,16 @@ Place (or symlink) the pkls under `<data_root>/ntu-rgbd/processed/hrnet/`:
 <data_root>/ntu-rgbd/processed/hrnet/
 ├── ntu60_hrnet.pkl     56,578 samples · 4 protocols (xsub/xview × train/val)
 └── ntu120_hrnet.pkl
+```
+
+Scripts resolve `<data_root>` from the `DATA_ROOT` environment variable, which
+defaults to `./data` if unset.  Either symlink your data into the project
+(`ln -s /path/to/data ./data`) or export the variable:
+
+```bash
+export DATA_ROOT=/path/to/data
+bash data_prep/download_hrnet.sh        # downloads to $DATA_ROOT/ntu-rgbd/processed/hrnet
+python data_prep/check_views.py         # uses the same default
 ```
 
 Each annotation:

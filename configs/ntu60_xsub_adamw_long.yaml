@@ -1,0 +1,53 @@
+# MUST-GCN · NTU60 X-Sub · AdamW · longer schedule (100 epochs)
+#
+# Safer schedule for the attention-heavy variant of MUST-GCN.  Use if the
+# 65-epoch curve in WandB is still climbing past epoch 55.
+#
+# Schedule shape:
+#   epoch  0–4    warmup
+#   epoch  5–54   base_lr
+#   epoch 55–84   base_lr × 0.1
+#   epoch 85–99   base_lr × 0.01
+
+# --- data
+train_split: xsub_train
+val_split:   xsub_val
+batch_size:  64
+num_workers: 8
+window_size: 64
+max_person:  2
+
+# --- model
+num_class:    60
+num_point:    17
+num_views:    3
+graph:        graph.coco17.Graph
+base_channel: 64
+num_heads:    4
+drop_out:     0.0
+attn_dropout: 0.0
+
+# --- loss
+aux_weight: 0.3
+
+# --- optimisation
+optimizer:    adamw
+base_lr:      3.0e-4
+weight_decay: 1.0e-2
+
+# --- schedule (extended)
+max_epochs:    100
+warmup_epochs: 5
+step_epochs:   [55, 85]
+lr_decay_rate: 0.1
+grad_clip:     1.0
+
+# --- trainer
+gpus:      1
+precision: bf16-mixed
+log_dir:   ./lightning_logs
+
+# --- WandB
+wandb_project: MUST-GCN
+wandb_name:    ntu60-xsub-adamw-100ep
+wandb_tags:    [ntu60, xsub, adamw, 100ep, long]

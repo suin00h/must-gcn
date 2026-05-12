@@ -1,5 +1,7 @@
 # data / weights (kept in shared /data/, not in repo)
-data/
+# /data matches both a real ./data dir AND the symlink some setups create
+/data
+/data/
 weights/
 *.pkl
 *.pt
@@ -25,5 +27,8 @@ __pycache__/
 .vscode/
 .DS_Store
 
-# private design / notes
+# notes / sanity checks
+sanity_output/
 multiview-har-design.md
+design-discussion.md
+commands.md

@@ -1,0 +1,44 @@
+# Pipeline smoke test — 1 epoch, ~30s wall time.  Does NOT train a real model.
+# Run before any long training to confirm: dataloader, forward, backward,
+# checkpoint save, WandB connectivity (if enabled).
+
+# --- data
+train_split: xsub_train
+val_split:   xsub_val
+batch_size:  8
+num_workers: 2
+window_size: 64
+max_person:  2
+
+# --- model (kept full-size — we want to exercise real shapes)
+num_class:    60
+num_point:    17
+num_views:    3
+graph:        graph.coco17.Graph
+base_channel: 64
+num_heads:    4
+
+# --- loss
+aux_weight: 0.3
+
+# --- optimisation
+optimizer:    adamw
+base_lr:      3.0e-4
+weight_decay: 1.0e-2
+
+# --- schedule
+max_epochs:    1
+warmup_epochs: 1
+step_epochs:   [1]
+lr_decay_rate: 0.1
+grad_clip:     1.0
+limit_train_batches: 5
+limit_val_batches:   5
+
+# --- trainer
+gpus:      1
+precision: bf16-mixed
+log_dir:   ./lightning_logs/_smoke
+
+# --- WandB (disabled by default for smoke)
+wandb_project: ''
