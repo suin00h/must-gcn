@@ -30,10 +30,33 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # ---- config queue ------------------------------------------------------------
 
 CONFIGS=(
-    configs/ntu120_xsub_adamw.yaml
-    configs/ntu60_xsub_adamw.yaml
-    configs/ntu60_xsub_sgd.yaml
-    # configs/ntu60_xsub_adamw_long.yaml         # uncomment for the 100-epoch run
+    # ---- NTU120 ablation queue (priority order) -----------------------------
+    # 1. Single-view baseline (essential — without this we can't claim
+    #    multi-view fusion helps).
+    configs/ntu120_xsub_1view.yaml
+
+    # 2. Multi-view + augmentation (Issue 1 — the main candidate).
+    configs/ntu120_xsub_adamw_aug.yaml
+
+    # 3. SA-heads ablation (Issue 3): 1, 2 (heads=4 is covered by #2).
+    configs/ntu120_xsub_adamw_aug_sa1.yaml
+    configs/ntu120_xsub_adamw_aug_sa2.yaml
+
+    # 4. Per-view BN ablation (Issue 2).
+    configs/ntu120_xsub_adamw_aug_pvbn.yaml
+
+    # 5. SA = weighted-sum ablation (Issue 3 alt).
+    configs/ntu120_xsub_adamw_aug_wsum.yaml
+
+    # 6. Longer schedule (Issue 4) — re-run the best config at 100 epochs
+    #    once results from #2–#5 are in.  Left in by default; comment out
+    #    to skip the +3 h cost.
+    configs/ntu120_xsub_adamw_aug_100ep.yaml
+
+    # ---- legacy / NTU60 runs (commented out by default; uncomment as needed) -
+    # configs/ntu60_xsub_adamw.yaml
+    # configs/ntu60_xsub_sgd.yaml
+    # configs/ntu60_xsub_adamw_long.yaml
 )
 
 # ---- env defaults ------------------------------------------------------------

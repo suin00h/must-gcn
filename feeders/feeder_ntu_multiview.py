@@ -1,14 +1,39 @@
 """Multi-view 2D skeleton feeder for NTU RGB+D (X-Sub).
 
-Each item returns 3 simultaneous camera views of one (S, P, R, A) instance,
-ready to feed into a shared CTR-GCN backbone.
+Each item returns the simultaneous camera views of one (S, P, R, A) instance,
+ready to feed into MUST-GCN.
 
-Returned tensor shape:  (V_views=3, C, T, V_joints=17, M=2)
+Returned tensor shape:  (V_views, C, T, V_joints=17, M=2)
+where V_views == 1 if `select_camera` is set, otherwise the number of complete views.
 
-Where C = 3 if `with_score` else 2:
-  - channel 0: x   (normalised)
-  - channel 1: y   (normalised)
-  - channel 2: HRNet keypoint score in [0, 1]   (optional)
+Channel layout (C):
+  - channel 0 : x   (normalised)
+  - channel 1 : y   (normalised)
+  - channel 2 : HRNet keypoint score in [0, 1]   (only if `with_score=True`)
+
+Augmentation
+------------
+Training-time augmentations operate in normalised coordinate space (after
+the image-centred / shorter-side normalisation) and use the **same random
+parameters across all views of a single sample** so cross-view geometric
+consistency is preserved.  Available (enable via flags):
+
+    random_rot    Uniform(-rot_range, +rot_range), about origin (2D z-rotation)
+    random_flip   Bernoulli(0.5) — negate x then swap COCO-17 L/R joint pairs
+    random_shear  Uniform(-shear_range, +shear_range) — x' = x + s·y
+
+Temporal cropping is also shared: a single `[start:start+window_size]`
+window is sampled once per item and applied to every view, so frame `t`
+of view `i` always corresponds (modulo HRNet detection drops) to the same
+wall-clock instant across views.
+
+Single-view mode
+----------------
+Pass `select_camera ∈ {1, 2, 3}` to fetch only that camera's data from each
+3-view-complete group.  Returned shape becomes `(V_views=1, ...)`, suitable
+for the single-view baseline ablation.  Groups are still filtered to those
+that have all 3 cameras available, so the train/val sample lists match the
+multi-view setting exactly.
 """
 
 from __future__ import annotations
@@ -17,7 +42,7 @@ import os
 import pickle
 import re
 from collections import defaultdict
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 from torch.utils.data import Dataset
@@ -39,8 +64,16 @@ def parse_name(name: str):
     return tuple(int(x) for x in m.groups())  # (S, C, P, R, A)
 
 
+# COCO-17 left-right joint pairs, for horizontal flip
+# (eyes, ears, shoulders, elbows, wrists, hips, knees, ankles)
+COCO17_FLIP_PAIRS = [
+    (1, 2),  (3, 4),
+    (5, 6),  (7, 8),  (9, 10),
+    (11, 12), (13, 14), (15, 16),
+]
+
+
 class MultiviewFeeder(Dataset):
-    NUM_VIEWS = 3
     NUM_JOINTS = 17                # COCO-17
 
     def __init__(
@@ -51,11 +84,29 @@ class MultiviewFeeder(Dataset):
         max_person: int = 2,
         with_score: bool = True,
         random_crop: bool = True,
+        # ---- augmentation (training only — leave all False on val/test)
+        random_rot: bool = False,
+        random_flip: bool = False,
+        random_shear: bool = False,
+        rot_range: float = np.pi / 12,     # ±15°
+        shear_range: float = 0.3,
+        # ---- single-view mode for the baseline ablation
+        select_camera: Optional[int] = None,    # 1 | 2 | 3, or None for all 3
     ):
         self.window_size = window_size
         self.max_person = max_person
         self.with_score = with_score
         self.random_crop = random_crop
+
+        self.random_rot = random_rot
+        self.random_flip = random_flip
+        self.random_shear = random_shear
+        self.rot_range = float(rot_range)
+        self.shear_range = float(shear_range)
+
+        if select_camera is not None and select_camera not in (1, 2, 3):
+            raise ValueError(f'select_camera must be 1, 2, 3, or None; got {select_camera}')
+        self.select_camera = select_camera
 
         with open(pkl_path, 'rb') as f:
             raw = pickle.load(f)
@@ -67,7 +118,8 @@ class MultiviewFeeder(Dataset):
         anno_by_name = {a['frame_dir']: a for a in raw['annotations']
                         if a['frame_dir'] in wanted}
 
-        # group by (S, P, R, A); keep only complete 3-view groups
+        # group by (S, P, R, A); keep only complete 3-view groups even when
+        # we'll only consume one camera — this keeps the sample list fair.
         groups: dict[tuple, dict[int, dict]] = defaultdict(dict)
         for name, anno in anno_by_name.items():
             parsed = parse_name(name)
@@ -87,29 +139,70 @@ class MultiviewFeeder(Dataset):
     def __len__(self) -> int:
         return len(self.groups)
 
+    @property
+    def num_views(self) -> int:
+        return 1 if self.select_camera is not None else 3
+
     def __getitem__(self, idx: int) -> Tuple[np.ndarray, int, tuple]:
         key, view_annos = self.groups[idx]
+        if self.select_camera is not None:
+            view_annos = [view_annos[self.select_camera - 1]]
+
         labels = {a['label'] for a in view_annos}
         assert len(labels) == 1, f'inconsistent labels across views at {key}: {labels}'
         label = next(iter(labels))
 
-        views = np.stack([self._process_one(a) for a in view_annos])  # (3, C, T, V, M)
+        # ---- shared temporal window across views (frame i in view A == frame i in view B)
+        min_T_in = min(a['total_frames'] for a in view_annos)
+        if min_T_in >= self.window_size:
+            if self.random_crop:
+                start = np.random.randint(0, min_T_in - self.window_size + 1)
+            else:
+                start = (min_T_in - self.window_size) // 2
+            time_slice = slice(start, start + self.window_size)
+        else:
+            # take everything and pad downstream
+            time_slice = slice(0, min_T_in)
+
+        # ---- shared augmentation params (sampled ONCE; applied identically to every view)
+        aug = self._sample_aug() if self._augment_enabled() else None
+
+        views = np.stack([self._process_one(a, time_slice, aug) for a in view_annos])
         return views.astype(np.float32), int(label), key
 
     # ------------------------------------------------------------------ helpers
 
-    def _process_one(self, anno) -> np.ndarray:
+    def _augment_enabled(self) -> bool:
+        return self.random_rot or self.random_flip or self.random_shear
+
+    def _sample_aug(self) -> dict:
+        return {
+            'theta': float(np.random.uniform(-self.rot_range, self.rot_range))
+                     if self.random_rot else 0.0,
+            'flip':  bool(np.random.rand() < 0.5) if self.random_flip else False,
+            'shear': float(np.random.uniform(-self.shear_range, self.shear_range))
+                     if self.random_shear else 0.0,
+        }
+
+    def _process_one(self, anno, time_slice: slice, aug: Optional[dict]) -> np.ndarray:
         kp = anno['keypoint'].astype(np.float32)              # (M, T, V, 2)
         score = anno['keypoint_score'].astype(np.float32)     # (M, T, V)
         H, W = anno['img_shape']
 
         kp, score = self._fix_person(kp, score)
-        kp, score = self._fix_time(kp, score)
+        kp = kp[:, time_slice]
+        score = score[:, time_slice]
+        kp, score = self._pad_time(kp, score)
 
-        # normalise to roughly [-1, 1] using image centre / shorter side
+        # normalise to roughly [-1, 1] (image-centred, scaled by min(H,W)/2)
         scale = min(H, W) / 2.0
         kp[..., 0] = (kp[..., 0] - W / 2.0) / scale
         kp[..., 1] = (kp[..., 1] - H / 2.0) / scale
+
+        # augmentation operates on normalised coords so rotation/shear are
+        # about the image centre (origin).
+        if aug is not None:
+            kp = self._apply_aug(kp, aug)
 
         if self.with_score:
             data = np.concatenate([kp, score[..., None]], axis=-1)   # (M, T, V, 3)
@@ -131,36 +224,73 @@ class MultiviewFeeder(Dataset):
             return kp, score
         return kp[: self.max_person], score[: self.max_person]
 
-    def _fix_time(self, kp, score):
+    def _pad_time(self, kp, score):
+        """Zero-pad the time axis up to window_size if shorter."""
         T_in, T_out = kp.shape[1], self.window_size
-        if T_in == T_out:
+        if T_in >= T_out:
             return kp, score
-        if T_in > T_out:
-            start = np.random.randint(0, T_in - T_out + 1) if self.random_crop \
-                    else (T_in - T_out) // 2
-            return kp[:, start:start + T_out], score[:, start:start + T_out]
-        # pad
-        pad = T_out - T_in
         M, _, V, _ = kp.shape
+        pad = T_out - T_in
         kp = np.concatenate([kp, np.zeros((M, pad, V, 2), dtype=kp.dtype)], axis=1)
         score = np.concatenate([score, np.zeros((M, pad, V), dtype=score.dtype)], axis=1)
         return kp, score
+
+    @staticmethod
+    def _apply_aug(kp: np.ndarray, aug: dict) -> np.ndarray:
+        theta = aug['theta']
+        flip  = aug['flip']
+        shear = aug['shear']
+
+        # rotation about origin (image centre, after normalisation)
+        if theta != 0.0:
+            cos_t, sin_t = np.cos(theta), np.sin(theta)
+            x = kp[..., 0].copy()
+            y = kp[..., 1].copy()
+            kp[..., 0] = cos_t * x - sin_t * y
+            kp[..., 1] = sin_t * x + cos_t * y
+
+        # shear along x-axis (x' = x + s·y)
+        if shear != 0.0:
+            kp[..., 0] = kp[..., 0] + shear * kp[..., 1]
+
+        # horizontal flip: negate x then swap COCO-17 L/R joint pairs
+        if flip:
+            kp[..., 0] *= -1.0
+            for a, b in COCO17_FLIP_PAIRS:
+                kp[:, :, [a, b]] = kp[:, :, [b, a]]
+
+        return kp
 
 
 # ---------------------------------------------------------------- self-test
 
 if __name__ == '__main__':
+    print('=== full 3-view ===')
     ds = MultiviewFeeder(
         pkl_path=DEFAULT_PKL,
         split='xsub_val',
         window_size=64,
         random_crop=False,
     )
-    print(f'len(dataset) = {len(ds)}')
+    print(f'len(dataset) = {len(ds)}    num_views = {ds.num_views}')
     data, label, key = ds[0]
-    print(f'data.shape   = {data.shape}    # (V_views=3, C, T, V_joints=17, M=2)')
-    print(f'data.dtype   = {data.dtype}')
-    print(f'label        = {label}')
-    print(f'key (S,P,R,A)= {key}')
-    print(f'data range   = [{data.min():.3f}, {data.max():.3f}]')
-    print(f'#zero frames : {int((data.sum(axis=(1, 3, 4)) == 0).sum())}/{3 * 64}')
+    print(f'data.shape   = {data.shape}    # (V_views, C, T, V_joints=17, M=2)')
+    print(f'data range   = [{data.min():.3f}, {data.max():.3f}]    label={label}    key={key}')
+
+    print('\n=== single-view (camera 2 only) ===')
+    ds1 = MultiviewFeeder(
+        pkl_path=DEFAULT_PKL, split='xsub_val', window_size=64,
+        random_crop=False, select_camera=2,
+    )
+    print(f'len(dataset) = {len(ds1)}    num_views = {ds1.num_views}')
+    data, label, key = ds1[0]
+    print(f'data.shape   = {data.shape}    label={label}    key={key}')
+
+    print('\n=== train with augmentation ===')
+    np.random.seed(0)
+    ds2 = MultiviewFeeder(
+        pkl_path=DEFAULT_PKL, split='xsub_val', window_size=64,
+        random_crop=True, random_rot=True, random_flip=True, random_shear=True,
+    )
+    data, label, key = ds2[0]
+    print(f'augmented data.shape = {data.shape}    data range = [{data.min():.3f}, {data.max():.3f}]')

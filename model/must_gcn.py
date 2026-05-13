@@ -55,6 +55,8 @@ def _build_block_specs(in_channels: int, base_channel: int = 64):
 class MUSTGCN(nn.Module):
     """Multi-view CTR-GCN with cross-view SA and temporal TA at every block."""
 
+    DATA_BN_MODES = ('shared', 'per_view')
+
     def __init__(
         self,
         num_class: int,
@@ -69,6 +71,8 @@ class MUSTGCN(nn.Module):
         drop_out: float = 0.0,
         adaptive: bool = True,
         attn_dropout: float = 0.0,
+        data_bn_mode: str = 'shared',  # 'shared' | 'per_view'
+        sa_mode: str = 'mha',          # 'mha' | 'weighted_sum' | 'none'
     ):
         super().__init__()
         Graph = import_class(graph)
@@ -80,19 +84,35 @@ class MUSTGCN(nn.Module):
         self.num_point = num_point
         self.in_channels = in_channels
         self.base_channel = base_channel
+        self.data_bn_mode = data_bn_mode
 
-        # 1) view-aware data_bn — V_views is part of the channel index (O1)
-        self.data_bn = nn.BatchNorm1d(
-            num_views * num_person * in_channels * num_point
-        )
-        bn_init(self.data_bn, 1)
+        # 1) data_bn — either ONE shared BN with V_views folded into the channel
+        #    index, or ONE BN PER VIEW.  Per-view BN matches the intuition that
+        #    NTU cameras have different x/y distributions (frontal vs lateral).
+        if data_bn_mode == 'shared':
+            self.data_bn = nn.BatchNorm1d(
+                num_views * num_person * in_channels * num_point
+            )
+            bn_init(self.data_bn, 1)
+        elif data_bn_mode == 'per_view':
+            self.data_bn = nn.ModuleList([
+                nn.BatchNorm1d(num_person * in_channels * num_point)
+                for _ in range(num_views)
+            ])
+            for bn in self.data_bn:
+                bn_init(bn, 1)
+        else:
+            raise ValueError(
+                f'data_bn_mode must be one of {self.DATA_BN_MODES}; got {data_bn_mode!r}'
+            )
 
         # 2) 10 GCN-SA-TA blocks
         specs = _build_block_specs(in_channels, base_channel)
         self.blocks = nn.ModuleList([
             MUSTGCNBlock(in_c, out_c, A, stride=s,
                          num_heads=num_heads, adaptive=adaptive,
-                         attn_dropout=attn_dropout)
+                         attn_dropout=attn_dropout,
+                         sa_mode=sa_mode, num_views=num_views)
             for in_c, out_c, s in specs
         ])
         self.out_channels = specs[-1][1]                          # = base_channel * 4
@@ -111,13 +131,24 @@ class MUSTGCN(nn.Module):
         Input/Output: (B, V_views, M, C, T, V)
         """
         B, Vv, M, C, T, V = x.shape
-        # (B, Vv, M, C, T, V) → (B, Vv, M, V, C, T)  so axes group as (V_view·M·V·C, T)
-        x_bn = x.permute(0, 1, 2, 5, 3, 4).contiguous()
-        x_bn = x_bn.view(B, Vv * M * V * C, T)
-        x_bn = self.data_bn(x_bn)
-        # back: (B, Vv, M, V, C, T) → (B, Vv, M, C, T, V)
-        x_bn = x_bn.view(B, Vv, M, V, C, T)
-        return x_bn.permute(0, 1, 2, 4, 5, 3).contiguous()
+
+        if self.data_bn_mode == 'shared':
+            # one BN with V_views in the channel index
+            x_bn = x.permute(0, 1, 2, 5, 3, 4).contiguous()
+            x_bn = x_bn.view(B, Vv * M * V * C, T)
+            x_bn = self.data_bn(x_bn)
+            x_bn = x_bn.view(B, Vv, M, V, C, T)
+            return x_bn.permute(0, 1, 2, 4, 5, 3).contiguous()
+
+        # per-view BN: run each view through its own BN1d
+        out = []
+        for v in range(Vv):
+            xv = x[:, v]                                                # (B, M, C, T, V)
+            xv = xv.permute(0, 1, 4, 2, 3).contiguous().view(B, M * V * C, T)
+            xv = self.data_bn[v](xv)
+            xv = xv.view(B, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous()  # (B, M, C, T, V)
+            out.append(xv)
+        return torch.stack(out, dim=1)                                   # (B, Vv, M, C, T, V)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """

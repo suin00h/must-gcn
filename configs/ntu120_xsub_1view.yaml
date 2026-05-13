@@ -1,0 +1,61 @@
+# Single-view baseline · NTU120 X-Sub · AdamW · 65 ep · with augmentation
+#
+# Critical comparison point — without this we cannot claim multi-view fusion
+# helps.  Uses ONLY camera 2 (the standard frontal view).  Augmentation is
+# enabled to match the multi-view-with-aug runs, so any delta vs. them
+# isolates the contribution of cross-view fusion.
+#
+# select_camera=2 auto-forces num_views=1.  Block-level SA/TA still run; SA
+# becomes Identity (no cross-view tokens to attend over) so the model
+# reduces to GCN + per-view TA, the cleanest 2D-skeleton single-view baseline
+# you can extract from this codebase.
+
+# --- data
+dataset:        ntu120
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    8
+window_size:    64
+max_person:     2
+select_camera:  2
+
+# --- augmentation
+random_rot:     true
+random_flip:    true
+random_shear:   true
+
+# --- model
+num_class:      120
+num_point:      17
+num_views:      1                  # implied by select_camera, kept explicit
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      4
+data_bn_mode:   shared
+sa_mode:        mha                # ignored when num_views=1 (collapses to Identity)
+
+# --- loss
+aux_weight:     0.3                # only one view → aux ≈ main, but kept for code uniformity
+
+# --- optimisation
+optimizer:      adamw
+base_lr:        3.0e-4
+weight_decay:   1.0e-2
+
+# --- schedule
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+# --- trainer
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+# --- WandB
+wandb_project:  MUST-GCN
+wandb_name:     ntu120-xsub-1view-cam2
+wandb_tags:     [ntu120, xsub, adamw, 65ep, single_view, baseline]

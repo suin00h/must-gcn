@@ -29,6 +29,5 @@ __pycache__/
 
 # notes / sanity checks
 sanity_output/
-multiview-har-design.md
-design-discussion.md
-commands.md
+docs/
+scripts/

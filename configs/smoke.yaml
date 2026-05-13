@@ -34,6 +34,7 @@ lr_decay_rate: 0.1
 grad_clip:     1.0
 limit_train_batches: 5
 limit_val_batches:   5
+limit_test_batches:  5
 
 # --- trainer
 gpus:      1

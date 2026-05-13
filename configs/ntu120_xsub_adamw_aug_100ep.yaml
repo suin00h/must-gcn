@@ -1,0 +1,60 @@
+# Multi-view + augmentation · NTU120 X-Sub · AdamW · 100 ep (Issue 4)
+#
+# The 65-ep adamw run on NTU120 showed val/acc1 still climbing past the
+# second LR decay at epoch 55.  This config extends the schedule to 100
+# epochs with step decay at [50, 80] for a clean cooldown tail.
+#
+# Schedule shape:
+#   epoch  0–4    warmup
+#   epoch  5–49   base_lr
+#   epoch 50–79   base_lr × 0.1
+#   epoch 80–99   base_lr × 0.01
+
+# --- data
+dataset:        ntu120
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    8
+window_size:    64
+max_person:     2
+
+# --- augmentation
+random_rot:     true
+random_flip:    true
+random_shear:   true
+
+# --- model
+num_class:      120
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      4
+data_bn_mode:   shared
+sa_mode:        mha
+
+# --- loss
+aux_weight:     0.3
+
+# --- optimisation
+optimizer:      adamw
+base_lr:        3.0e-4
+weight_decay:   1.0e-2
+
+# --- schedule (extended)
+max_epochs:     100
+warmup_epochs:  5
+step_epochs:    [50, 80]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+# --- trainer
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+# --- WandB
+wandb_project:  MUST-GCN
+wandb_name:     ntu120-xsub-adamw-aug-100ep
+wandb_tags:     [ntu120, xsub, adamw, 100ep, aug, long]

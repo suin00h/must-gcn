@@ -1,0 +1,56 @@
+# Multi-view + augmentation · NTU120 X-Sub · AdamW · 65 ep
+#
+# Same architecture as the original ntu120_xsub_adamw.yaml run that produced
+# val/acc1 = 80.1 %, but adds train-time augmentation (rotation ±15°,
+# horizontal flip with COCO-17 L/R swap, x-shear).  All augmentations use
+# the same random parameters across the 3 views of a sample, preserving
+# cross-view geometric consistency.
+
+# --- data
+dataset:        ntu120
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    8
+window_size:    64
+max_person:     2
+
+# --- augmentation
+random_rot:     true
+random_flip:    true
+random_shear:   true
+
+# --- model
+num_class:      120
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      4
+data_bn_mode:   shared
+sa_mode:        mha
+
+# --- loss
+aux_weight:     0.3
+
+# --- optimisation
+optimizer:      adamw
+base_lr:        3.0e-4
+weight_decay:   1.0e-2
+
+# --- schedule
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+# --- trainer
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+# --- WandB
+wandb_project:  MUST-GCN
+wandb_name:     ntu120-xsub-adamw-aug-65ep
+wandb_tags:     [ntu120, xsub, adamw, 65ep, aug]

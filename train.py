@@ -70,6 +70,13 @@ def parse_args():
     p.add_argument('--max_person',  type=int, default=2)
     p.add_argument('--no_score',    action='store_true',
                    help='drop the HRNet keypoint score channel (in_channels = 2 instead of 3)')
+    # augmentations
+    p.add_argument('--random_rot',   action='store_true', help='train-time z-axis rotation (±15°)')
+    p.add_argument('--random_flip',  action='store_true', help='train-time horizontal flip with COCO-17 L/R swap')
+    p.add_argument('--random_shear', action='store_true', help='train-time x-shear (s ~ Uniform(-0.3, 0.3))')
+    # single-view baseline
+    p.add_argument('--select_camera', type=int, default=None, choices=[1, 2, 3],
+                   help='use only one camera; auto-forces --num_views 1')
 
     # ---------------- model
     p.add_argument('--num_class',    type=int, default=60)
@@ -81,6 +88,10 @@ def parse_args():
     p.add_argument('--drop_out',     type=float, default=0.0)
     p.add_argument('--attn_dropout', type=float, default=0.0)
     p.add_argument('--no_adaptive',  action='store_true')
+    p.add_argument('--data_bn_mode', default='shared', choices=['shared', 'per_view'],
+                   help='shared = one BN with V_views in channel index; per_view = 3 BNs')
+    p.add_argument('--sa_mode',      default='mha', choices=['mha', 'weighted_sum', 'none'],
+                   help='cross-view fusion stage: MHA, learnable weighted sum, or identity')
 
     # ---------------- loss
     p.add_argument('--aux_weight', type=float, default=0.3,
@@ -104,11 +115,14 @@ def parse_args():
     p.add_argument('--precision', default='bf16-mixed',
                    help='one of: 32, 16-mixed, bf16-mixed   (bf16-mixed is recommended on RTX 5090)')
     p.add_argument('--log_dir',   default='./lightning_logs')
-    p.add_argument('--ckpt_path', default=None, help='resume from a checkpoint')
+    p.add_argument('--ckpt_path', default=None, help='resume training from a checkpoint, OR (with --eval_only) load weights for test phase')
+    p.add_argument('--eval_only', action='store_true',
+                   help='skip training; run only the test phase on --ckpt_path')
     p.add_argument('--seed',      type=int, default=1)
     p.add_argument('--limit_train_batches', type=float, default=None,
                    help='Lightning passthrough — useful for smoke tests')
     p.add_argument('--limit_val_batches',   type=float, default=None)
+    p.add_argument('--limit_test_batches',  type=float, default=None)
 
     # ---------------- WandB
     p.add_argument('--wandb_project', default='mustgcn',
@@ -143,6 +157,12 @@ def main():
 
     in_channels = 2 if args.no_score else 3
 
+    # single-view mode collapses the view axis to 1; force consistency.
+    if args.select_camera is not None and args.num_views != 1:
+        print(f'[train] --select_camera={args.select_camera}  →  forcing num_views=1 '
+              f'(was {args.num_views})')
+        args.num_views = 1
+
     # ---------------- model
     model = MUSTGCNModule(
         num_class=args.num_class,
@@ -156,6 +176,8 @@ def main():
         drop_out=args.drop_out,
         adaptive=not args.no_adaptive,
         attn_dropout=args.attn_dropout,
+        data_bn_mode=args.data_bn_mode,
+        sa_mode=args.sa_mode,
         aux_weight=args.aux_weight,
         optimizer=args.optimizer,
         base_lr=args.base_lr,
@@ -177,6 +199,10 @@ def main():
         window_size=args.window_size,
         max_person=args.max_person,
         with_score=not args.no_score,
+        random_rot=args.random_rot,
+        random_flip=args.random_flip,
+        random_shear=args.random_shear,
+        select_camera=args.select_camera,
     )
 
     # ---------------- logger
@@ -223,10 +249,25 @@ def main():
         trainer_kwargs['limit_train_batches'] = args.limit_train_batches
     if args.limit_val_batches is not None:
         trainer_kwargs['limit_val_batches']   = args.limit_val_batches
+    if args.limit_test_batches is not None:
+        trainer_kwargs['limit_test_batches']  = args.limit_test_batches
 
     trainer = pl.Trainer(**trainer_kwargs)
+
+    if args.eval_only:
+        if args.ckpt_path is None:
+            raise SystemExit('--eval_only requires --ckpt_path pointing at a saved checkpoint')
+        trainer.test(model, datamodule=dm, ckpt_path=args.ckpt_path)
+        return
+
     trainer.fit(model, datamodule=dm, ckpt_path=args.ckpt_path)
-    trainer.validate(model, datamodule=dm, ckpt_path='best')
+
+    # Final test phase on the best checkpoint.  In NTU's protocol, the
+    # held-out test set is what PYSKL labels `xsub_val`, so test_dataloader
+    # and val_dataloader expose the same data — but this phase additionally
+    # writes test_output/{predictions.csv, per_class_acc.csv,
+    # confusion_matrix.png, logits.npz} and logs WandB CM + per-class bar.
+    trainer.test(model, datamodule=dm, ckpt_path='best')
 
 
 if __name__ == '__main__':

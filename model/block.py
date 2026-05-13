@@ -40,12 +40,18 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .attention import CrossViewSpatialAttention, TemporalSelfAttention
+from .attention import (
+    CrossViewSpatialAttention,
+    TemporalSelfAttention,
+    ViewFusionWeightedSum,
+)
 from .ctrgcn_blocks import unit_gcn, unit_tcn
 
 
 class MUSTGCNBlock(nn.Module):
     """One iteration of the GCN-SA-TA cycle."""
+
+    SA_MODES = ('mha', 'weighted_sum', 'none')
 
     def __init__(
         self,
@@ -56,11 +62,14 @@ class MUSTGCNBlock(nn.Module):
         num_heads: int = 4,
         adaptive: bool = True,
         attn_dropout: float = 0.0,
+        sa_mode: str = 'mha',                    # 'mha' | 'weighted_sum' | 'none'
+        num_views: int = 3,
     ):
         super().__init__()
         self.in_c = in_channels
         self.out_c = out_channels
         self.stride = stride
+        self.sa_mode = sa_mode
 
         # 1) GCN — intra-view joint structure, handles channel change
         self.gcn = unit_gcn(in_channels, out_channels, A, adaptive=adaptive)
@@ -74,9 +83,20 @@ class MUSTGCNBlock(nn.Module):
             self.tcn_stride = None
             self.tcn_relu = None
 
-        # 3) Cross-view spatial attention (over the 3 view tokens)
-        self.sa = CrossViewSpatialAttention(out_channels, num_heads=num_heads,
-                                            dropout=attn_dropout)
+        # 3) Cross-view spatial fusion — picked by `sa_mode`.
+        #    Single-view runs (num_views == 1) make any cross-view op a no-op,
+        #    so we collapse to Identity for speed and to avoid wasted params.
+        if num_views == 1:
+            self.sa = nn.Identity()
+        elif sa_mode == 'mha':
+            self.sa = CrossViewSpatialAttention(out_channels, num_heads=num_heads,
+                                                dropout=attn_dropout)
+        elif sa_mode == 'weighted_sum':
+            self.sa = ViewFusionWeightedSum(num_views=num_views)
+        elif sa_mode == 'none':
+            self.sa = nn.Identity()
+        else:
+            raise ValueError(f'sa_mode must be one of {self.SA_MODES}; got {sa_mode!r}')
 
         # 4) Temporal self-attention (within view, over T tokens)
         self.ta = TemporalSelfAttention(out_channels, num_heads=num_heads,

@@ -21,12 +21,14 @@ The hypothesis: complementary spatial and temporal information across views narr
 - [x] HRNet 2D pose data downloaded (PYSKL release)
 - [x] 3-view coverage verified — 98.5 % of X-Sub samples have all 3 cameras
 - [x] COCO-17 graph definition
-- [x] Multi-view dataloader (group by `(S, P, R, A)`)
+- [x] Multi-view dataloader (group by `(S, P, R, A)`, shared temporal crop, optional 2D aug)
 - [x] GCN-SA-TA block + full MUST-GCN model (~3.86 M params)
 - [x] Training pipeline with WandB logging, AdamW + SGD-Nesterov, bf16 mixed precision
-- [ ] Full NTU60 X-Sub training run
-- [ ] NTU120 X-Sub training run
-- [ ] Ablations (heads, aux-loss weight, no-score, insertion variants)
+- [x] Test phase with per-class CSV / confusion-matrix PNG / per-class-bar PNG / raw-logits npz artifacts
+- [x] NTU60 X-Sub full training (AdamW + SGD)
+- [x] NTU120 X-Sub full training
+- [x] Ablations: SA num_heads (1 / 2 / 4), SA = weighted_sum, per-view BN, single-view, 100-ep schedule
+- [ ] Paper writeup
 
 ## Setup
 
@@ -102,31 +104,39 @@ X-View is incompatible with 3-view inference (cam 1 is held out at test time), s
 
 ```
 must-gcn/
-├── configs/                       YAML training recipes
-│   ├── smoke.yaml                  pipeline smoke (~30 s)
-│   ├── ntu60_xsub_adamw.yaml       AdamW · NTU60 · 65 ep  (primary)
-│   ├── ntu60_xsub_sgd.yaml         SGD-Nesterov · NTU60 · 65 ep  (CTR-GCN-faithful)
-│   ├── ntu60_xsub_adamw_long.yaml  AdamW · NTU60 · 100 ep
-│   └── ntu120_xsub_adamw.yaml      AdamW · NTU120 · 65 ep
+├── configs/                              YAML training recipes
+│   ├── smoke.yaml                         pipeline smoke (~30 s)
+│   ├── ntu60_xsub_adamw.yaml              AdamW · NTU60 · 65 ep
+│   ├── ntu60_xsub_sgd.yaml                SGD-Nesterov · NTU60 · 65 ep
+│   ├── ntu60_xsub_adamw_long.yaml         AdamW · NTU60 · 100 ep
+│   ├── ntu120_xsub_adamw.yaml             AdamW · NTU120 · 65 ep  (no aug)
+│   ├── ntu120_xsub_adamw_aug.yaml         + train-time aug (rot / flip / shear)
+│   ├── ntu120_xsub_adamw_aug_100ep.yaml   + 100 ep, step decay [50, 80]
+│   ├── ntu120_xsub_adamw_aug_sa1.yaml     SA num_heads = 1
+│   ├── ntu120_xsub_adamw_aug_sa2.yaml     SA num_heads = 2
+│   ├── ntu120_xsub_adamw_aug_pvbn.yaml    per-view data_bn (3 separate BN1d)
+│   ├── ntu120_xsub_adamw_aug_wsum.yaml    SA = learnable weighted sum (no MHA)
+│   └── ntu120_xsub_1view.yaml             single-view baseline (camera 2 only)
 ├── data_prep/
-│   ├── download_hrnet.sh           fetch PYSKL HRNet pkls into $DATA_ROOT
-│   ├── inspect_pkl.py              dump structure + first-sample stats
-│   └── check_views.py              verify per-split 3-view coverage
+│   ├── download_hrnet.sh                  fetch PYSKL HRNet pkls into $DATA_ROOT
+│   ├── inspect_pkl.py                     dump structure + first-sample stats
+│   └── check_views.py                     verify per-split 3-view coverage
 ├── feeders/
-│   └── feeder_ntu_multiview.py     multi-view Dataset → (B, 3, C, T, V, M)
+│   └── feeder_ntu_multiview.py            multi-view Dataset → (B, V_views, C, T, V, M)
 ├── graph/
-│   ├── coco17.py                   17-joint adjacency (3 partitions)
-│   └── tools.py                    graph utilities
+│   ├── coco17.py                          17-joint adjacency (3 partitions)
+│   └── tools.py                           graph utilities
 ├── model/
-│   ├── attention.py                cross-view SA + temporal TA (multi-head)
-│   ├── block.py                    GCN-SA-TA block (with optional strided TCN)
-│   ├── ctrgcn_blocks.py            CTR-GCN building blocks (vendored)
-│   └── must_gcn.py                 top-level MUSTGCN module
-├── mustgcn_module.py               LightningModule (loss, metrics, optimisers)
-├── mustgcn_datamodule.py           LightningDataModule (X-Sub train / val)
-├── train.py                        training entry point (--config YAML support)
-├── run_experiments.sh              sequential queue runner
-└── sanity_view.py                  HRNet keypoint overlay on RGB frames
+│   ├── attention.py                       cross-view SA (MHA / weighted-sum) + temporal TA
+│   ├── block.py                           GCN-SA-TA block (with optional strided TCN)
+│   ├── ctrgcn_blocks.py                   CTR-GCN building blocks (vendored + split)
+│   └── must_gcn.py                        top-level MUSTGCN module
+├── mustgcn_module.py                      LightningModule (loss, metrics, optimisers, test artifacts)
+├── mustgcn_datamodule.py                  LightningDataModule (X-Sub train / val / test)
+├── train.py                               training entry point (--config YAML support, --eval_only)
+├── analyze_params.py                      hierarchical parameter-count breakdown per variant
+├── sanity_view.py                         HRNet keypoint overlay on RGB frames
+└── run_experiments.sh                     sequential queue runner (template — edit CONFIGS array)
 ```
 
 ## Usage
@@ -140,29 +150,75 @@ python train.py --config configs/smoke.yaml
 ### Train
 
 ```bash
-# Primary run: AdamW, NTU60 X-Sub, 65 epochs
-python train.py --config configs/ntu60_xsub_adamw.yaml
+# Primary AdamW run on NTU120 X-Sub with augmentation (recommended)
+python train.py --config configs/ntu120_xsub_adamw_aug.yaml
 
-# SGD-Nesterov variant
+# SGD-Nesterov variant on NTU60
 python train.py --config configs/ntu60_xsub_sgd.yaml
 
-# NTU120 X-Sub
-python train.py --config configs/ntu120_xsub_adamw.yaml
+# Single-view baseline (camera 2 only)
+python train.py --config configs/ntu120_xsub_1view.yaml
 
 # Override any setting from the CLI (CLI > YAML > defaults)
-python train.py --config configs/ntu60_xsub_adamw.yaml --batch_size 32
+python train.py --config configs/ntu120_xsub_adamw_aug.yaml --batch_size 32 --num_heads 1
 ```
 
-Checkpoints (top-3 by `val/acc1` + `last.ckpt`) land under `lightning_logs/`; metrics stream to WandB under the project named in each YAML's `wandb_project`.
+`train.py` accepts the usual CLI flags including `--random_rot / --random_flip / --random_shear`, `--select_camera {1,2,3}` (auto-forces `num_views=1`), `--data_bn_mode {shared,per_view}`, `--sa_mode {mha,weighted_sum,none}`, and `--num_heads N`.
+
+### Test only (no training)
+
+Re-run the test phase on a saved checkpoint without retraining — useful for getting test artifacts on a previously-completed run, or for ensembling later:
+
+```bash
+python train.py --config configs/ntu120_xsub_adamw.yaml \
+                --eval_only \
+                --ckpt_path lightning_logs/MUST-GCN/<run_id>/checkpoints/<best>.ckpt \
+                --wandb_name "ntu120-baseline-test"
+```
+
+Eval-only uses ~3–6 GB VRAM (no backward pass), so it's safe to run alongside a training job.
+
+### Test artifacts
+
+Each completed test phase writes to `lightning_logs/test_output/<wandb_id>/`:
+
+| file | content |
+|------|---------|
+| `predictions.csv` | per-sample `idx, pred, label, correct, top1_prob, top2_class, top2_prob, top3_class, top3_prob` |
+| `per_class_acc.csv` | `class, total, correct, acc` |
+| `confusion_matrix.png` | row-normalised heat-map |
+| `per_class_acc.png` | bar chart with mean line (red = below mean, blue = at/above) |
+| `logits.npz` | raw `logits (N, K)` + `per_view (N, V_views, K)` + `labels` + `preds` |
+
+Both PNGs are also uploaded to WandB as `wandb.Image()`s under `test/confusion_matrix` and `test/per_class_acc`.
 
 ### Multiple runs back-to-back
 
-`run_experiments.sh` runs configs in order, logs each to its own file, and continues on failure:
+`run_experiments.sh` runs configs in order, logs each to its own file, and continues on failure.  Edit the `CONFIGS` array at the top to choose which experiments to run:
 
 ```bash
 chmod +x run_experiments.sh        # one-time
 ./run_experiments.sh               # or: tmux new -s exp; ./run_experiments.sh
 ```
+
+The runner defaults to `CUDA_VISIBLE_DEVICES=2`; override at invocation time:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 ./run_experiments.sh
+```
+
+### Inspect model parameters
+
+```bash
+python analyze_params.py                                  # baseline (NTU120, 3 views, mha, h=4, shared BN)
+python analyze_params.py --num_views 1                    # single-view variant
+python analyze_params.py --sa_mode weighted_sum
+python analyze_params.py --data_bn_mode per_view
+python analyze_params.py --num_heads 2                    # SA-heads ablation
+python analyze_params.py --num_class 60                   # NTU60 — only `fc` changes
+```
+
+Prints a top-level summary, per-block breakdown, and a zoom into one representative block.
 
 ### Visual sanity (RGB overlay of HRNet keypoints on all 3 cameras)
 
@@ -180,8 +236,8 @@ python data_prep/check_views.py                        # per-split 3-view covera
 ## Resuming a run
 
 ```bash
-python train.py --config configs/ntu60_xsub_adamw.yaml \
-                --ckpt_path lightning_logs/.../checkpoints/last.ckpt
+python train.py --config configs/ntu120_xsub_adamw_aug.yaml \
+                --ckpt_path lightning_logs/MUST-GCN/<run_id>/checkpoints/last.ckpt
 ```
 
 ## Citations

@@ -126,6 +126,35 @@ class TemporalSelfAttention(nn.Module):
         return tokens.permute(0, 1, 2, 5, 4, 3).contiguous()
 
 
+class ViewFusionWeightedSum(nn.Module):
+    """Lightweight alternative to `CrossViewSpatialAttention` for the SA stage.
+
+    Cross-view fusion via a single learnable softmax-weighted sum, with a
+    residual connection so each view keeps its own information:
+
+        fused[b, m, c, t, v]   =  Σ_v'  softmax(w)[v']  ·  X[b, v', m, c, t, v]
+        out  [b, v, m, c, t, v] = X[b, v, m, c, t, v] + fused[b, m, c, t, v]
+
+    The view dimension is preserved (so downstream TA + further blocks still
+    see V_views > 1).  Useful for the SA-heads ablation: 4 heads over 3
+    tokens is mostly redundant, and a single 3-parameter learned average
+    may give a stronger early-training signal.
+
+    Cost: a single (num_views,) parameter per block — negligible.
+    """
+
+    def __init__(self, num_views: int = 3):
+        super().__init__()
+        self.num_views = num_views
+        self.view_weights = nn.Parameter(torch.ones(num_views) / num_views)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, V_views, M, C, T, V)
+        w = self.view_weights.softmax(0).view(1, -1, 1, 1, 1, 1)
+        fused = (x * w).sum(dim=1, keepdim=True)                  # (B, 1, M, C, T, V)
+        return x + fused.expand_as(x)
+
+
 # ------------------------------------------------------------------ smoke test
 
 
