@@ -22,10 +22,13 @@ Test-phase artifacts (written under `<log_dir>/test_output/<run_id>/`):
     logits.npz            raw logits, per-view logits, labels, preds
 
 WandB extras (logged when using WandbLogger):
-    test/confusion_matrix  PNG image of the heat-map
-    test/per_class_acc     PNG image of the bar chart
+    test/cm_image              PNG image of the confusion matrix
+    test/per_class_acc_image   PNG image of the per-class accuracy bar chart
     (uploaded as static images via wandb.Image — the interactive
-    wandb.plot.* variants are too slow to render at K=120)
+    wandb.plot.* variants are too slow to render at K=120.  These keys
+    are distinct from the historical `test/confusion_matrix` /
+    `test/per_class_acc` so freshly-added panels don't collide with the
+    old laggy Vega-plot runs.)
 
 Test == official held-out NTU split (PYSKL labels it `xsub_val` for legacy
 reasons; we expose the same dataloader as `test_dataloader`).
@@ -220,7 +223,15 @@ class MUSTGCNModule(pl.LightningModule):
     # ------------------------------------- private helpers for the test phase
 
     def _log_wandb_images(self, out_dir):
-        """Upload pre-rendered PNGs from `out_dir` to WandB as Images."""
+        """Upload pre-rendered PNGs from `out_dir` to WandB as Images.
+
+        NOTE on key names: the historical keys `test/confusion_matrix` and
+        `test/per_class_acc` are intentionally NOT reused because earlier
+        runs logged interactive Vega plots under those names, and any panel
+        targeting them re-renders the laggy historical data alongside the
+        new images.  We log to fresh keys so a freshly-added panel only
+        loads the static image-style entries from this run onward.
+        """
         try:
             from pytorch_lightning.loggers import WandbLogger
         except ImportError:
@@ -230,10 +241,10 @@ class MUSTGCNModule(pl.LightningModule):
         import wandb
         try:
             wandb.log({
-                'test/confusion_matrix': wandb.Image(str(out_dir / 'confusion_matrix.png'),
-                                                    caption='Test confusion matrix (row-normalised)'),
-                'test/per_class_acc':    wandb.Image(str(out_dir / 'per_class_acc.png'),
-                                                    caption='Per-class accuracy'),
+                'test/cm_image':            wandb.Image(str(out_dir / 'confusion_matrix.png'),
+                                                       caption='Test confusion matrix (row-normalised)'),
+                'test/per_class_acc_image': wandb.Image(str(out_dir / 'per_class_acc.png'),
+                                                       caption='Per-class accuracy'),
             })
         except Exception as e:
             print(f'[warn] WandB image upload failed: {e}')

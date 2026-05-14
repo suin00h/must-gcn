@@ -126,6 +126,160 @@ class TemporalSelfAttention(nn.Module):
         return tokens.permute(0, 1, 2, 5, 4, 3).contiguous()
 
 
+class PairwiseCrossViewAttention(nn.Module):
+    """Cross-view attention where each view conditions ONLY on the other views.
+
+    Option A in `docs/sa_crossattn_design.md`.  Selected via
+    ``sa_mode='cross_pair'`` in the model / block constructors.
+
+    Input  : (B, V_views, M, C, T, V)
+    Output : same shape — drop-in replacement for `CrossViewSpatialAttention`.
+
+    Mechanism (per spatial-temporal cell):
+        For each view i ∈ {0, …, V_views-1}:
+            Q_i = W_Q · F_i                       # (1, C)
+            K   = W_K · concat(F_j for j ≠ i)     # (V_views-1, C)
+            V   = W_V · concat(F_j for j ≠ i)
+            F_i'= F_i + MHA(Q_i, K, V)            # pre-norm + residual
+
+    Unlike `CrossViewSpatialAttention` (self-attention over all V_views tokens
+    with Q = K = V = input), there is NO self-attention path: view i never
+    attends to itself, so the cross-view information flow is explicit.
+
+    Shared Q / K / V projections across views (same `nn.MultiheadAttention`
+    instance applied to every view's (q, kv) pair in a loop — view-agnostic).
+
+    Default `num_heads=2`: KV sequence length is V_views-1 = 2 at V_views=3, so
+    head counts ≥ 4 fragment a 2-token attention map and waste capacity.  At
+    V_views > 3, more heads may help.
+    """
+
+    def __init__(self, in_dim: int, num_heads: int = 2, dropout: float = 0.0):
+        super().__init__()
+        if in_dim % num_heads != 0:
+            raise ValueError(
+                f'in_dim ({in_dim}) must be divisible by num_heads ({num_heads})'
+            )
+        self.in_dim = in_dim
+        self.num_heads = num_heads
+        self.norm = nn.LayerNorm(in_dim)
+        self.mha = nn.MultiheadAttention(
+            embed_dim=in_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, Vv, M, C, T, V = x.shape
+
+        # (B, V_views, M, C, T, V) → (B, M, T, V, V_views, C)
+        tokens = x.permute(0, 2, 4, 5, 1, 3).contiguous()
+        # fold (B, M, T, V) into batch:  (B*M*T*V, V_views, C)
+        N = B * M * T * V
+        tokens = tokens.reshape(N, Vv, C)
+
+        # Pre-norm once; the same norm is shared for Q and KV (per spec).
+        tokens_n = self.norm(tokens)
+
+        # For each view i, attend to the other V_views-1 views.
+        # The loop is over V_views (typically 3) so it's cheap; vectorising
+        # would require constructing a leave-one-out gather which buys little.
+        out_pieces = []
+        for i in range(Vv):
+            q  = tokens_n[:, i:i + 1]                          # (N, 1, C)
+            other_idx = [j for j in range(Vv) if j != i]
+            kv = tokens_n[:, other_idx]                        # (N, V_views-1, C)
+
+            with sdpa_kernel(_SAFE_SDP_BACKENDS):
+                attn_out, _ = self.mha(q, kv, kv, need_weights=False)
+
+            # Residual: ORIGINAL (un-normed) view-i token + attention output.
+            out_pieces.append(tokens[:, i:i + 1] + attn_out)   # (N, 1, C)
+
+        out = torch.cat(out_pieces, dim=1)                     # (N, V_views, C)
+        # unfold and permute back: (N, V_views, C) → (B, V_views, M, C, T, V)
+        out = out.reshape(B, M, T, V, Vv, C)
+        return out.permute(0, 4, 1, 5, 2, 3).contiguous()
+
+
+class BottleneckCrossViewAttention(nn.Module):
+    """Cross-view attention via a single shared latent token.
+
+    Option B in `docs/sa_crossattn_design.md`.  A 1-token latent mediates all
+    cross-view information exchange; each view's Q attends to this single
+    K=V=latent.  More parameter-efficient than `PairwiseCrossViewAttention`
+    (KV seq=1 instead of V_views-1) and scales O(V) instead of O(V²) with the
+    number of views.
+
+    The latent is either:
+      • the **mean** of the per-cell view features         (`use_learnable_bottleneck=False`)
+      • a **learnable** `nn.Parameter` of shape (1, 1, C)  (`use_learnable_bottleneck=True`)
+
+    Both modes are ablated in the design plan.
+
+    Input  : (B, V_views, M, C, T, V)
+    Output : same shape — drop-in replacement for `CrossViewSpatialAttention`.
+
+    Default `num_heads=2`: KV seq=1 so head-fragmentation is the only concern.
+    Multi-head still helps by letting different heads project the latent
+    differently; ≥ 2 is reasonable, ≥ 4 starts wasting capacity.
+    """
+
+    def __init__(self, in_dim: int, num_heads: int = 2, dropout: float = 0.0,
+                 use_learnable_bottleneck: bool = False):
+        super().__init__()
+        if in_dim % num_heads != 0:
+            raise ValueError(
+                f'in_dim ({in_dim}) must be divisible by num_heads ({num_heads})'
+            )
+        self.in_dim = in_dim
+        self.num_heads = num_heads
+        self.use_learnable_bottleneck = use_learnable_bottleneck
+
+        self.norm = nn.LayerNorm(in_dim)
+        self.mha = nn.MultiheadAttention(
+            embed_dim=in_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+        if use_learnable_bottleneck:
+            # Single global latent token, broadcast across batch and spatial.
+            self.bottleneck = nn.Parameter(torch.zeros(1, 1, in_dim))
+            nn.init.normal_(self.bottleneck, mean=0.0, std=0.02)
+        else:
+            self.bottleneck = None    # latent = mean of views per cell, computed live
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, Vv, M, C, T, V = x.shape
+
+        # (B, V_views, M, C, T, V) → (N, V_views, C)  with N = B·M·T·V
+        tokens = x.permute(0, 2, 4, 5, 1, 3).contiguous()
+        N = B * M * T * V
+        tokens = tokens.reshape(N, Vv, C)
+        tokens_n = self.norm(tokens)
+
+        # Latent: (N, 1, C)
+        if self.use_learnable_bottleneck:
+            latent = self.bottleneck.expand(N, 1, C)
+        else:
+            latent = tokens_n.mean(dim=1, keepdim=True)
+
+        # Each view's Q attends to the same 1-token latent.  Loop over views.
+        out_pieces = []
+        for i in range(Vv):
+            q = tokens_n[:, i:i + 1]                                # (N, 1, C)
+            with sdpa_kernel(_SAFE_SDP_BACKENDS):
+                attn_out, _ = self.mha(q, latent, latent, need_weights=False)
+            out_pieces.append(tokens[:, i:i + 1] + attn_out)        # residual
+
+        out = torch.cat(out_pieces, dim=1)                          # (N, V_views, C)
+        out = out.reshape(B, M, T, V, Vv, C)
+        return out.permute(0, 4, 1, 5, 2, 3).contiguous()
+
+
 class ViewFusionWeightedSum(nn.Module):
     """Lightweight alternative to `CrossViewSpatialAttention` for the SA stage.
 

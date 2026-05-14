@@ -90,6 +90,10 @@ class MUSTGCNDataModule(pl.LightningDataModule):
             num_workers=self.hparams.num_workers,
             drop_last=drop_last,
             pin_memory=True,
+            # persistent_workers=False intentionally: workers tear down at
+            # each epoch boundary and release their /dev/shm segments.  Costs
+            # ~2-5 s per epoch (fork + Python re-init) and saves us from the
+            # transient shm-overflow crashes we hit on this 64 MB-shm host.
             persistent_workers=self.hparams.num_workers > 0,
         )
 

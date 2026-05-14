@@ -90,8 +90,16 @@ def parse_args():
     p.add_argument('--no_adaptive',  action='store_true')
     p.add_argument('--data_bn_mode', default='shared', choices=['shared', 'per_view'],
                    help='shared = one BN with V_views in channel index; per_view = 3 BNs')
-    p.add_argument('--sa_mode',      default='mha', choices=['mha', 'weighted_sum', 'none'],
-                   help='cross-view fusion stage: MHA, learnable weighted sum, or identity')
+    p.add_argument('--sa_mode',      default='mha',
+                   choices=['mha', 'cross_pair', 'cross_bottle',
+                            'cross_bottle_learn', 'weighted_sum', 'none'],
+                   help='cross-view fusion: '
+                        'mha (self-attn, default), '
+                        'cross_pair (pairwise cross-attn, view i ← others), '
+                        'cross_bottle (bottleneck cross-attn, mean latent), '
+                        'cross_bottle_learn (bottleneck cross-attn, learnable latent), '
+                        'weighted_sum (learnable softmax avg), '
+                        'or none (identity).')
 
     # ---------------- loss
     p.add_argument('--aux_weight', type=float, default=0.3,

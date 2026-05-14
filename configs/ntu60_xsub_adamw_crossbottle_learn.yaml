@@ -1,0 +1,49 @@
+# MUST-GCN · NTU60 X-Sub · AdamW · 65 ep · NO aug · SA = bottleneck (learnable)
+#
+# Option B-learn from `docs/sa_crossattn_design.md`.  Same as `crossbottle`
+# but the latent is a per-block `nn.Parameter(1, 1, C)` (1408 extra params
+# total) instead of the mean of views.  Ablate vs the mean variant.
+
+# --- data
+dataset:        ntu60
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    8
+window_size:    64
+max_person:     2
+
+# --- model
+num_class:      60
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      2
+data_bn_mode:   shared
+sa_mode:        cross_bottle_learn # learnable latent
+
+# --- loss
+aux_weight:     0.3
+
+# --- optimisation
+optimizer:      adamw
+base_lr:        3.0e-4
+weight_decay:   1.0e-2
+
+# --- schedule
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+# --- trainer
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+# --- WandB
+wandb_project:  MUST-GCN
+wandb_name:     ntu60-xsub-adamw-crossbottle-learn-65ep
+wandb_tags:     [ntu60, xsub, adamw, 65ep, ablation, sa_cross_bottle, learnable]

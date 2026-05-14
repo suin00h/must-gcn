@@ -1,0 +1,55 @@
+# MUST-GCN · NTU120 X-Sub · SGD-Nesterov · 65 ep · NO augmentation
+#
+# Mirrors `ntu60_xsub_sgd.yaml` for NTU120.  Tests whether SGD's +2.35 %
+# lead over AdamW on NTU60 (88.67 % vs 86.32 %) also holds on NTU120
+# (where AdamW + no-aug got 80.09 %).
+#
+# Schedule shape (CTR-GCN-faithful):
+#   epoch  0–4   warmup
+#   epoch  5–34  base_lr (0.1)
+#   epoch 35–54  base_lr × 0.1
+#   epoch 55–64  base_lr × 0.01
+
+# --- data
+dataset:        ntu120
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    8
+window_size:    64
+max_person:     2
+
+# --- model
+num_class:      120
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      4
+data_bn_mode:   shared
+sa_mode:        mha
+
+# --- loss
+aux_weight:     0.3
+
+# --- optimisation (CTR-GCN paper defaults)
+optimizer:      sgd
+base_lr:        0.1
+weight_decay:   4.0e-4
+
+# --- schedule
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+# --- trainer
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+# --- WandB
+wandb_project:  MUST-GCN
+wandb_name:     ntu120-xsub-sgd-65ep
+wandb_tags:     [ntu120, xsub, sgd, 65ep, baseline]

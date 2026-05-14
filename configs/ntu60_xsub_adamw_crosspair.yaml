@@ -1,0 +1,52 @@
+# MUST-GCN · NTU60 X-Sub · AdamW · 65 ep · NO aug · SA = pairwise cross-attn
+#
+# Option A from `docs/sa_crossattn_design.md`.  Each view attends ONLY to
+# the other views (no self-loop), via a 2-token KV cross-attention.  Default
+# num_heads=2 (KV sequence is 2 tokens; more heads fragment redundantly).
+#
+# Baseline reference for the ablation:
+#   `ntu60_xsub_adamw.yaml`  — same recipe, sa_mode = mha (self-attn) — 86.32 %
+
+# --- data
+dataset:        ntu60
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    8
+window_size:    64
+max_person:     2
+
+# --- model
+num_class:      60
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      2                  # design-doc recommended for cross-attn over (V_views-1)=2 KV tokens
+data_bn_mode:   shared
+sa_mode:        cross_pair         # <— the ablation
+
+# --- loss
+aux_weight:     0.3
+
+# --- optimisation
+optimizer:      adamw
+base_lr:        3.0e-4
+weight_decay:   1.0e-2
+
+# --- schedule
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+# --- trainer
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+# --- WandB
+wandb_project:  MUST-GCN
+wandb_name:     ntu60-xsub-adamw-crosspair-h2-65ep
+wandb_tags:     [ntu60, xsub, adamw, 65ep, ablation, sa_cross_pair]

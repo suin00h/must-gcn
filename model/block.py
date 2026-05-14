@@ -41,7 +41,9 @@ import torch
 import torch.nn as nn
 
 from .attention import (
+    BottleneckCrossViewAttention,
     CrossViewSpatialAttention,
+    PairwiseCrossViewAttention,
     TemporalSelfAttention,
     ViewFusionWeightedSum,
 )
@@ -51,7 +53,15 @@ from .ctrgcn_blocks import unit_gcn, unit_tcn
 class MUSTGCNBlock(nn.Module):
     """One iteration of the GCN-SA-TA cycle."""
 
-    SA_MODES = ('mha', 'weighted_sum', 'none')
+    # Cross-view SA options:
+    #   mha                  — 3-token self-attention over all views (default)
+    #   cross_pair           — pairwise cross-attention; view i ← {j, k} only (Option A)
+    #   cross_bottle         — bottleneck cross-attn, latent = mean(views)    (Option B)
+    #   cross_bottle_learn   — bottleneck cross-attn, latent = learnable param (Option B-learn)
+    #   weighted_sum         — learnable softmax-weighted average across views
+    #   none                 — identity (no cross-view fusion at this stage)
+    SA_MODES = ('mha', 'cross_pair', 'cross_bottle', 'cross_bottle_learn',
+                'weighted_sum', 'none')
 
     def __init__(
         self,
@@ -62,7 +72,7 @@ class MUSTGCNBlock(nn.Module):
         num_heads: int = 4,
         adaptive: bool = True,
         attn_dropout: float = 0.0,
-        sa_mode: str = 'mha',                    # 'mha' | 'weighted_sum' | 'none'
+        sa_mode: str = 'mha',                    # see SA_MODES
         num_views: int = 3,
     ):
         super().__init__()
@@ -91,6 +101,17 @@ class MUSTGCNBlock(nn.Module):
         elif sa_mode == 'mha':
             self.sa = CrossViewSpatialAttention(out_channels, num_heads=num_heads,
                                                 dropout=attn_dropout)
+        elif sa_mode == 'cross_pair':
+            self.sa = PairwiseCrossViewAttention(out_channels, num_heads=num_heads,
+                                                 dropout=attn_dropout)
+        elif sa_mode == 'cross_bottle':
+            self.sa = BottleneckCrossViewAttention(out_channels, num_heads=num_heads,
+                                                   dropout=attn_dropout,
+                                                   use_learnable_bottleneck=False)
+        elif sa_mode == 'cross_bottle_learn':
+            self.sa = BottleneckCrossViewAttention(out_channels, num_heads=num_heads,
+                                                   dropout=attn_dropout,
+                                                   use_learnable_bottleneck=True)
         elif sa_mode == 'weighted_sum':
             self.sa = ViewFusionWeightedSum(num_views=num_views)
         elif sa_mode == 'none':

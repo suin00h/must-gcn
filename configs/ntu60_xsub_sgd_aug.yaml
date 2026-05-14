@@ -1,0 +1,54 @@
+# MUST-GCN · NTU60 X-Sub · SGD-Nesterov · 65 ep · WITH augmentation
+#
+# Mirror of `ntu120_xsub_sgd_aug.yaml`.  Cross-check: does SGD interact
+# with aug differently than AdamW did?  (On NTU120 AdamW, aug cost
+# 1.13 %; SGD's stronger regularisation may handle augmented data better.)
+
+# --- data
+dataset:        ntu60
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    8
+window_size:    64
+max_person:     2
+
+# --- augmentation
+random_rot:     true
+random_flip:    true
+random_shear:   true
+
+# --- model
+num_class:      60
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      4
+data_bn_mode:   shared
+sa_mode:        mha
+
+# --- loss
+aux_weight:     0.3
+
+# --- optimisation
+optimizer:      sgd
+base_lr:        0.1
+weight_decay:   4.0e-4
+
+# --- schedule
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+# --- trainer
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+# --- WandB
+wandb_project:  MUST-GCN
+wandb_name:     ntu60-xsub-sgd-aug-65ep
+wandb_tags:     [ntu60, xsub, sgd, 65ep, aug]

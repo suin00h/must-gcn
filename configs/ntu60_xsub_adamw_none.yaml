@@ -1,0 +1,43 @@
+# MUST-GCN · NTU60 X-Sub · AdamW · 65 ep · NO aug · SA = Identity (no fusion)
+#
+# D-priority fill — the "no cross-view fusion at any block" baseline.
+# Each view is processed independently by GCN + TA; only the final
+# mean-of-logits combines them.  Answers: does any block-level cross-view
+# attention matter at all?
+
+dataset:        ntu60
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    8
+window_size:    64
+max_person:     2
+
+num_class:      60
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      4
+data_bn_mode:   shared
+sa_mode:        none
+
+aux_weight:     0.3
+
+optimizer:      adamw
+base_lr:        3.0e-4
+weight_decay:   1.0e-2
+
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+wandb_project:  MUST-GCN
+wandb_name:     ntu60-xsub-adamw-none-65ep
+wandb_tags:     [ntu60, xsub, adamw, 65ep, ablation, sa_none]
