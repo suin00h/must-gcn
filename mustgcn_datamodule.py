@@ -48,6 +48,11 @@ class MUSTGCNDataModule(pl.LightningDataModule):
         shear_range: float = 0.3,
         # single-view baseline mode
         select_camera: Optional[int] = None,
+        # baseline-experiment modes
+        squeeze_view: bool = False,                   # drop leading V_views=1 axis (CTR-GCN baseline)
+        expand_views: bool = False,                   # TRAIN only: enumerate (group, cam) as separate items
+        # temporal sampling: 'uniform' (PYSKL UniformSample) or 'crop' (contiguous window)
+        temporal_sampling: str = 'uniform',
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -69,7 +74,12 @@ class MUSTGCNDataModule(pl.LightningDataModule):
             random_shear=hp.random_shear,
             rot_range=hp.rot_range,
             shear_range=hp.shear_range,
-            select_camera=hp.select_camera,
+            # With expand_views the train feeder enumerates all cameras, so
+            # select_camera is left None there; otherwise it honours it.
+            select_camera=(None if hp.expand_views else hp.select_camera),
+            squeeze_view=hp.squeeze_view,
+            expand_views=hp.expand_views,
+            temporal_sampling=hp.temporal_sampling,
         )
         self.val_set = MultiviewFeeder(
             pkl_path=self.pkl_path,
@@ -78,8 +88,11 @@ class MUSTGCNDataModule(pl.LightningDataModule):
             max_person=hp.max_person,
             with_score=hp.with_score,
             random_crop=False,
-            # No augmentation on val/test.
+            # No augmentation on val/test; val/test never expand views.
             select_camera=hp.select_camera,
+            squeeze_view=hp.squeeze_view,
+            expand_views=False,
+            temporal_sampling=hp.temporal_sampling,
         )
 
     def _loader(self, ds, shuffle: bool, drop_last: bool) -> DataLoader:

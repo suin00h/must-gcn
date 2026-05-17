@@ -92,6 +92,11 @@ class MultiviewFeeder(Dataset):
         shear_range: float = 0.3,
         # ---- single-view mode for the baseline ablation
         select_camera: Optional[int] = None,    # 1 | 2 | 3, or None for all 3
+        # ---- baseline-experiment modes
+        squeeze_view: bool = False,             # drop the leading V_views=1 axis → (C,T,V,M)
+        expand_views: bool = False,             # enumerate every (group, camera) as its own item
+        # ---- temporal sampling: 'uniform' (PYSKL UniformSample) or 'crop' (contiguous window)
+        temporal_sampling: str = 'uniform',
     ):
         self.window_size = window_size
         self.max_person = max_person
@@ -107,6 +112,12 @@ class MultiviewFeeder(Dataset):
         if select_camera is not None and select_camera not in (1, 2, 3):
             raise ValueError(f'select_camera must be 1, 2, 3, or None; got {select_camera}')
         self.select_camera = select_camera
+        self.squeeze_view = squeeze_view
+        self.expand_views = expand_views
+
+        if temporal_sampling not in ('uniform', 'crop'):
+            raise ValueError(f"temporal_sampling must be 'uniform' or 'crop'; got {temporal_sampling!r}")
+        self.temporal_sampling = temporal_sampling
 
         with open(pkl_path, 'rb') as f:
             raw = pickle.load(f)
@@ -134,27 +145,42 @@ class MultiviewFeeder(Dataset):
             if {1, 2, 3}.issubset(v.keys())
         )
 
+        # expand_views: a flat list of (group_idx, cam_idx) — each camera of
+        # each group becomes an independent dataset item (3× the length).
+        if self.expand_views:
+            self.flat_index = [(g, c) for g in range(len(self.groups))
+                               for c in range(3)]
+
     # ------------------------------------------------------------------ Dataset
 
     def __len__(self) -> int:
+        if self.expand_views:
+            return len(self.flat_index)
         return len(self.groups)
 
     @property
     def num_views(self) -> int:
-        return 1 if self.select_camera is not None else 3
+        return 1 if (self.select_camera is not None or self.expand_views) else 3
 
     def __getitem__(self, idx: int) -> Tuple[np.ndarray, int, tuple]:
-        key, view_annos = self.groups[idx]
-        if self.select_camera is not None:
-            view_annos = [view_annos[self.select_camera - 1]]
+        if self.expand_views:
+            group_idx, cam_idx = self.flat_index[idx]
+            key, all_views = self.groups[group_idx]
+            view_annos = [all_views[cam_idx]]
+        else:
+            key, view_annos = self.groups[idx]
+            if self.select_camera is not None:
+                view_annos = [view_annos[self.select_camera - 1]]
 
         labels = {a['label'] for a in view_annos}
         assert len(labels) == 1, f'inconsistent labels across views at {key}: {labels}'
         label = next(iter(labels))
 
-        # ---- shared temporal window across views (frame i in view A == frame i in view B)
+        # ---- shared temporal index across views (frame i of view A == frame i of view B)
         min_T_in = min(a['total_frames'] for a in view_annos)
-        if min_T_in >= self.window_size:
+        if self.temporal_sampling == 'uniform':
+            time_slice = self._uniform_indices(min_T_in, training=self.random_crop)
+        elif min_T_in >= self.window_size:
             if self.random_crop:
                 start = np.random.randint(0, min_T_in - self.window_size + 1)
             else:
@@ -168,7 +194,14 @@ class MultiviewFeeder(Dataset):
         aug = self._sample_aug() if self._augment_enabled() else None
 
         views = np.stack([self._process_one(a, time_slice, aug) for a in view_annos])
-        return views.astype(np.float32), int(label), key
+        views = views.astype(np.float32)               # (n_views, C, T, V, M)
+
+        # squeeze_view: drop the leading singleton view axis → (C, T, V, M).
+        # Used by single-view models (CTR-GCN baseline) that expect no view axis.
+        if self.squeeze_view and views.shape[0] == 1:
+            views = views[0]
+
+        return views, int(label), key
 
     # ------------------------------------------------------------------ helpers
 
@@ -184,7 +217,22 @@ class MultiviewFeeder(Dataset):
                      if self.random_shear else 0.0,
         }
 
-    def _process_one(self, anno, time_slice: slice, aug: Optional[dict]) -> np.ndarray:
+    def _uniform_indices(self, num_frames: int, training: bool) -> np.ndarray:
+        """PYSKL-style UniformSample: split [0, num_frames) into window_size
+        equal bins and take one frame per bin — a random frame within the bin
+        when training, the bin centre otherwise.  Always returns exactly
+        window_size indices, so short clips are evenly oversampled (no
+        zero-padding) and long clips evenly subsampled (no truncation)."""
+        L = self.window_size
+        bids = (np.arange(L + 1, dtype=np.int64) * max(num_frames, 1)) // L
+        bsize = np.diff(bids)
+        if training:
+            offset = (np.random.rand(L) * bsize).astype(np.int64)
+        else:
+            offset = bsize // 2
+        return bids[:L] + offset
+
+    def _process_one(self, anno, time_slice, aug: Optional[dict]) -> np.ndarray:
         kp = anno['keypoint'].astype(np.float32)              # (M, T, V, 2)
         score = anno['keypoint_score'].astype(np.float32)     # (M, T, V)
         H, W = anno['img_shape']
