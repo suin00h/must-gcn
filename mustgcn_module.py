@@ -75,7 +75,12 @@ class MUSTGCNModule(pl.LightningModule):
         adaptive: bool = True,
         attn_dropout: float = 0.0,
         data_bn_mode: str = 'shared',                # 'shared' | 'per_view'
-        sa_mode: str = 'mha',                        # 'mha' | 'weighted_sum' | 'none'
+        sa_mode: str = 'mha',                        # see MUSTGCN docstring for all options
+        input_level_cva: bool = False,               # Option 1 — pre-backbone cross-view fusion
+        view_weights: str = 'shared',                # Option 0 — 'shared' (default) or 'separate' per-view GCN+TA
+        sa_start_block: int = 0,                     # Phase-5 Option B — sparse SA from this block index
+        post_backbone_ca: bool = False,              # Phase-5 Option A — post-backbone cross-attention
+        cls_cross_view: bool = False,                # Phase-5 Option C — CLS-token cross-view exchange
         # loss
         aux_weight: float = 0.3,
         # optimisation
@@ -105,6 +110,11 @@ class MUSTGCNModule(pl.LightningModule):
             attn_dropout=attn_dropout,
             data_bn_mode=data_bn_mode,
             sa_mode=sa_mode,
+            input_level_cva=input_level_cva,
+            view_weights=view_weights,
+            sa_start_block=sa_start_block,
+            post_backbone_ca=post_backbone_ca,
+            cls_cross_view=cls_cross_view,
         )
         self.ce = nn.CrossEntropyLoss()
 

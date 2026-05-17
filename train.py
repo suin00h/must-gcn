@@ -66,7 +66,10 @@ def parse_args():
     p.add_argument('--val_split',   default='xsub_val')
     p.add_argument('--batch_size',  type=int, default=64)
     p.add_argument('--num_workers', type=int, default=8)
-    p.add_argument('--window_size', type=int, default=64)
+    p.add_argument('--window_size', type=int, default=64,
+                   help='output clip length T (= UniformSample clip_len)')
+    p.add_argument('--temporal_sampling', default='uniform', choices=['uniform', 'crop'],
+                   help='uniform = PYSKL UniformSample (whole-clip, bin-per-frame); crop = contiguous window')
     p.add_argument('--max_person',  type=int, default=2)
     p.add_argument('--no_score',    action='store_true',
                    help='drop the HRNet keypoint score channel (in_channels = 2 instead of 3)')
@@ -77,8 +80,15 @@ def parse_args():
     # single-view baseline
     p.add_argument('--select_camera', type=int, default=None, choices=[1, 2, 3],
                    help='use only one camera; auto-forces --num_views 1')
+    # baseline-experiment modes
+    p.add_argument('--squeeze_view', action='store_true',
+                   help='Exp 1: drop the leading V_views=1 axis so the feeder emits (C,T,V,M) — required by the CTR-GCN baseline.')
+    p.add_argument('--expand_views', action='store_true',
+                   help='Exp 2: TRAIN feeder enumerates every (group, camera) as an independent sample (3× the data); val/test stay single-camera.')
 
     # ---------------- model
+    p.add_argument('--model_arch',   default='mustgcn', choices=['mustgcn', 'ctrgcn'],
+                   help='mustgcn (default) = GCN-SA-TA architecture; ctrgcn = original CTR-GCN (GCN+TCN) 2D baseline.')
     p.add_argument('--num_class',    type=int, default=60)
     p.add_argument('--num_point',    type=int, default=17)
     p.add_argument('--num_views',    type=int, default=3)
@@ -92,14 +102,26 @@ def parse_args():
                    help='shared = one BN with V_views in channel index; per_view = 3 BNs')
     p.add_argument('--sa_mode',      default='mha',
                    choices=['mha', 'cross_pair', 'cross_bottle',
-                            'cross_bottle_learn', 'weighted_sum', 'none'],
+                            'cross_bottle_learn', 'joint_cross',
+                            'weighted_sum', 'none'],
                    help='cross-view fusion: '
                         'mha (self-attn, default), '
-                        'cross_pair (pairwise cross-attn, view i ← others), '
+                        'cross_pair (pairwise cross-attn over views), '
                         'cross_bottle (bottleneck cross-attn, mean latent), '
-                        'cross_bottle_learn (bottleneck cross-attn, learnable latent), '
+                        'cross_bottle_learn (bottleneck, learnable latent), '
+                        'joint_cross (pairwise cross-attn, tokens = V_joints), '
                         'weighted_sum (learnable softmax avg), '
                         'or none (identity).')
+    p.add_argument('--input_level_cva', action='store_true',
+                   help='Option 1: prepend a cross-view attention module at the raw C_in level, before any GCN.  Adds ~17 k params; zero-init so initially identity.')
+    p.add_argument('--view_weights', default='shared', choices=['shared', 'separate'],
+                   help='Option 0: shared (single GCN/TA across views — default) or separate (per-view GCN+TA; SA stays shared).  "separate" ~ 3× the GCN+TA params.')
+    p.add_argument('--sa_start_block', type=int, default=0,
+                   help='Phase-5 Option B: blocks before this index are forced to sa_mode=none; only blocks >= this index run cross-view SA.  e.g. 8 → SA only at blocks 8,9.')
+    p.add_argument('--post_backbone_ca', action='store_true',
+                   help='Phase-5 Option A: one cross-view attention on pooled features, between the (T,V) pool and the FC head.')
+    p.add_argument('--cls_cross_view', action='store_true',
+                   help='Phase-5 Option C: per-view CLS-token cross-view exchange after the backbone.')
 
     # ---------------- loss
     p.add_argument('--aux_weight', type=float, default=0.3,
@@ -115,11 +137,15 @@ def parse_args():
     p.add_argument('--warmup_epochs', type=int, default=5)
     p.add_argument('--step_epochs',   type=int, default=[35, 55], nargs='+')
     p.add_argument('--lr_decay_rate', type=float, default=0.1)
+    p.add_argument('--lr_schedule',   default='step', choices=['step', 'cosine'],
+                   help='LR schedule for the CTR-GCN baseline (model_arch=ctrgcn); MUST-GCN always uses step.')
     p.add_argument('--grad_clip',     type=float, default=1.0,
                    help='gradient L2 clip norm (0 to disable)')
 
     # ---------------- trainer
     p.add_argument('--gpus',      type=int, default=1)
+    p.add_argument('--accumulate_grad_batches', type=int, default=1,
+                   help='accumulate gradients over N batches; effective batch = batch_size * N')
     p.add_argument('--precision', default='bf16-mixed',
                    help='one of: 32, 16-mixed, bf16-mixed   (bf16-mixed is recommended on RTX 5090)')
     p.add_argument('--log_dir',   default='./lightning_logs')
@@ -166,35 +192,63 @@ def main():
     in_channels = 2 if args.no_score else 3
 
     # single-view mode collapses the view axis to 1; force consistency.
-    if args.select_camera is not None and args.num_views != 1:
-        print(f'[train] --select_camera={args.select_camera}  →  forcing num_views=1 '
-              f'(was {args.num_views})')
+    if (args.select_camera is not None or args.expand_views) and args.num_views != 1:
+        print(f'[train] single-view mode  →  forcing num_views=1 (was {args.num_views})')
         args.num_views = 1
 
     # ---------------- model
-    model = MUSTGCNModule(
-        num_class=args.num_class,
-        num_point=args.num_point,
-        num_person=args.max_person,
-        num_views=args.num_views,
-        graph=args.graph,
-        in_channels=in_channels,
-        base_channel=args.base_channel,
-        num_heads=args.num_heads,
-        drop_out=args.drop_out,
-        adaptive=not args.no_adaptive,
-        attn_dropout=args.attn_dropout,
-        data_bn_mode=args.data_bn_mode,
-        sa_mode=args.sa_mode,
-        aux_weight=args.aux_weight,
-        optimizer=args.optimizer,
-        base_lr=args.base_lr,
-        weight_decay=args.weight_decay,
-        max_epochs=args.max_epochs,
-        warmup_epochs=args.warmup_epochs,
-        step_epochs=tuple(args.step_epochs),
-        lr_decay_rate=args.lr_decay_rate,
-    )
+    if args.model_arch == 'ctrgcn':
+        # Original CTR-GCN 2D baseline (Exp 1) — single-view, no per-view logits.
+        from ctrgcn_module import CTRGCNModule
+        sgd_lr = args.base_lr if args.base_lr is not None else 0.1
+        sgd_wd = args.weight_decay if args.weight_decay is not None else 4e-4
+        model = CTRGCNModule(
+            num_class=args.num_class,
+            num_point=args.num_point,
+            num_person=args.max_person,
+            graph=args.graph,
+            in_channels=in_channels,
+            base_channel=args.base_channel,
+            drop_out=args.drop_out,
+            adaptive=not args.no_adaptive,
+            optimizer=args.optimizer,
+            base_lr=sgd_lr,
+            weight_decay=sgd_wd,
+            max_epochs=args.max_epochs,
+            warmup_epochs=args.warmup_epochs,
+            lr_schedule=args.lr_schedule,
+            step_epochs=tuple(args.step_epochs),
+            lr_decay_rate=args.lr_decay_rate,
+        )
+    else:
+        model = MUSTGCNModule(
+            num_class=args.num_class,
+            num_point=args.num_point,
+            num_person=args.max_person,
+            num_views=args.num_views,
+            graph=args.graph,
+            in_channels=in_channels,
+            base_channel=args.base_channel,
+            num_heads=args.num_heads,
+            drop_out=args.drop_out,
+            adaptive=not args.no_adaptive,
+            attn_dropout=args.attn_dropout,
+            data_bn_mode=args.data_bn_mode,
+            sa_mode=args.sa_mode,
+            input_level_cva=args.input_level_cva,
+            view_weights=args.view_weights,
+            sa_start_block=args.sa_start_block,
+            post_backbone_ca=args.post_backbone_ca,
+            cls_cross_view=args.cls_cross_view,
+            aux_weight=args.aux_weight,
+            optimizer=args.optimizer,
+            base_lr=args.base_lr,
+            weight_decay=args.weight_decay,
+            max_epochs=args.max_epochs,
+            warmup_epochs=args.warmup_epochs,
+            step_epochs=tuple(args.step_epochs),
+            lr_decay_rate=args.lr_decay_rate,
+        )
 
     # ---------------- data
     dm = MUSTGCNDataModule(
@@ -211,6 +265,9 @@ def main():
         random_flip=args.random_flip,
         random_shear=args.random_shear,
         select_camera=args.select_camera,
+        squeeze_view=args.squeeze_view,
+        expand_views=args.expand_views,
+        temporal_sampling=args.temporal_sampling,
     )
 
     # ---------------- logger
@@ -251,6 +308,7 @@ def main():
         default_root_dir=args.log_dir,
         log_every_n_steps=50,
         gradient_clip_val=args.grad_clip if args.grad_clip > 0 else None,
+        accumulate_grad_batches=args.accumulate_grad_batches,
         deterministic=False,    # MHA + bf16 isn't fully deterministic — accept it
     )
     if args.limit_train_batches is not None:
