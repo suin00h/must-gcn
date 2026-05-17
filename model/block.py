@@ -43,6 +43,7 @@ import torch.nn as nn
 from .attention import (
     BottleneckCrossViewAttention,
     CrossViewSpatialAttention,
+    JointCrossViewAttention,
     PairwiseCrossViewAttention,
     TemporalSelfAttention,
     ViewFusionWeightedSum,
@@ -58,10 +59,12 @@ class MUSTGCNBlock(nn.Module):
     #   cross_pair           — pairwise cross-attention; view i ← {j, k} only (Option A)
     #   cross_bottle         — bottleneck cross-attn, latent = mean(views)    (Option B)
     #   cross_bottle_learn   — bottleneck cross-attn, latent = learnable param (Option B-learn)
+    #   joint_cross          — pairwise cross-attn at JOINT level; tokens = V_joints (Option 2)
     #   weighted_sum         — learnable softmax-weighted average across views
     #   none                 — identity (no cross-view fusion at this stage)
     SA_MODES = ('mha', 'cross_pair', 'cross_bottle', 'cross_bottle_learn',
-                'weighted_sum', 'none')
+                'joint_cross', 'weighted_sum', 'none')
+    VIEW_WEIGHTS_MODES = ('shared', 'separate')
 
     def __init__(
         self,
@@ -74,20 +77,43 @@ class MUSTGCNBlock(nn.Module):
         attn_dropout: float = 0.0,
         sa_mode: str = 'mha',                    # see SA_MODES
         num_views: int = 3,
+        view_weights: str = 'shared',            # 'shared' | 'separate'  (Option 0)
     ):
         super().__init__()
         self.in_c = in_channels
         self.out_c = out_channels
         self.stride = stride
         self.sa_mode = sa_mode
+        self.view_weights = view_weights
+        self.num_views = num_views
+        if view_weights not in self.VIEW_WEIGHTS_MODES:
+            raise ValueError(
+                f'view_weights must be in {self.VIEW_WEIGHTS_MODES}; got {view_weights!r}'
+            )
+        # In 'separate' mode each view gets its own GCN, strided TCN, TA, and
+        # outer-residual.  SA stays shared regardless (cross-view by definition).
+        sep = (view_weights == 'separate' and num_views > 1)
+        self._sep = sep
 
         # 1) GCN — intra-view joint structure, handles channel change
-        self.gcn = unit_gcn(in_channels, out_channels, A, adaptive=adaptive)
+        if sep:
+            self.gcn = nn.ModuleList([
+                unit_gcn(in_channels, out_channels, A, adaptive=adaptive)
+                for _ in range(num_views)
+            ])
+        else:
+            self.gcn = unit_gcn(in_channels, out_channels, A, adaptive=adaptive)
 
         # 2) Strided TCN — only when stride > 1 (blocks 4 and 7)
         if stride != 1:
-            self.tcn_stride = unit_tcn(out_channels, out_channels,
-                                       kernel_size=9, stride=stride)
+            if sep:
+                self.tcn_stride = nn.ModuleList([
+                    unit_tcn(out_channels, out_channels, kernel_size=9, stride=stride)
+                    for _ in range(num_views)
+                ])
+            else:
+                self.tcn_stride = unit_tcn(out_channels, out_channels,
+                                           kernel_size=9, stride=stride)
             self.tcn_relu = nn.ReLU(inplace=True)
         else:
             self.tcn_stride = None
@@ -112,6 +138,9 @@ class MUSTGCNBlock(nn.Module):
             self.sa = BottleneckCrossViewAttention(out_channels, num_heads=num_heads,
                                                    dropout=attn_dropout,
                                                    use_learnable_bottleneck=True)
+        elif sa_mode == 'joint_cross':
+            self.sa = JointCrossViewAttention(out_channels, num_heads=num_heads,
+                                              dropout=attn_dropout)
         elif sa_mode == 'weighted_sum':
             self.sa = ViewFusionWeightedSum(num_views=num_views)
         elif sa_mode == 'none':
@@ -120,47 +149,87 @@ class MUSTGCNBlock(nn.Module):
             raise ValueError(f'sa_mode must be one of {self.SA_MODES}; got {sa_mode!r}')
 
         # 4) Temporal self-attention (within view, over T tokens)
-        self.ta = TemporalSelfAttention(out_channels, num_heads=num_heads,
-                                        dropout=attn_dropout)
+        if sep:
+            self.ta = nn.ModuleList([
+                TemporalSelfAttention(out_channels, num_heads=num_heads,
+                                      dropout=attn_dropout)
+                for _ in range(num_views)
+            ])
+        else:
+            self.ta = TemporalSelfAttention(out_channels, num_heads=num_heads,
+                                            dropout=attn_dropout)
 
         # 5) Outer block-level residual (skip around GCN-strided_TCN-SA-TA)
         if in_channels == out_channels and stride == 1:
-            self.outer_residual = nn.Identity()
+            if sep:
+                self.outer_residual = nn.ModuleList([nn.Identity() for _ in range(num_views)])
+            else:
+                self.outer_residual = nn.Identity()
         else:
-            self.outer_residual = unit_tcn(in_channels, out_channels,
-                                           kernel_size=1, stride=stride)
+            if sep:
+                self.outer_residual = nn.ModuleList([
+                    unit_tcn(in_channels, out_channels, kernel_size=1, stride=stride)
+                    for _ in range(num_views)
+                ])
+            else:
+                self.outer_residual = unit_tcn(in_channels, out_channels,
+                                               kernel_size=1, stride=stride)
         self.out_relu = nn.ReLU(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, V_views, M, C_in, T_in, V)
         B, Vv, M, C_in, T_in, V = x.shape
 
-        # fold (V_views, M) into batch for 4D convs / GCN
-        x_flat = x.reshape(B * Vv * M, C_in, T_in, V)
+        if not self._sep:
+            # ---------- shared-weight path (current behaviour) ----------
+            x_flat = x.reshape(B * Vv * M, C_in, T_in, V)
+            res = self.outer_residual(x_flat)             # (B·Vv·M, C_out, T_out, V)
+            out = self.gcn(x_flat)                         # (B·Vv·M, C_out, T_in, V)
+            if self.tcn_stride is not None:
+                out = self.tcn_stride(out)
+                out = self.tcn_relu(out)
+            C_out, T_out = out.shape[1], out.shape[2]
+            out = out.reshape(B, Vv, M, C_out, T_out, V)
+            out = self.sa(out)
+            out = self.ta(out)
+            res = res.reshape(B, Vv, M, C_out, T_out, V)
+            return self.out_relu(out + res)
 
-        # outer residual
-        res = self.outer_residual(x_flat)                # (B·Vv·M, C_out, T_out, V)
+        # ---------- separate-weight path (per-view GCN/TA/residual) ----------
+        # Run each view through its own GCN (+ optional strided TCN) + outer residual.
+        out_views = []
+        res_views = []
+        for v in range(Vv):
+            xv = x[:, v].reshape(B * M, C_in, T_in, V)
+            res_v = self.outer_residual[v](xv)             # (B*M, C_out, T_out, V)
+            out_v = self.gcn[v](xv)                         # (B*M, C_out, T_in, V)
+            if self.tcn_stride is not None:
+                out_v = self.tcn_stride[v](out_v)
+                out_v = self.tcn_relu(out_v)
+            out_views.append(out_v)
+            res_views.append(res_v)
 
-        # GCN
-        out = self.gcn(x_flat)                            # (B·Vv·M, C_out, T_in, V)
+        C_out, T_out = out_views[0].shape[1], out_views[0].shape[2]
+        # Stack to (B, V_views, M, C_out, T_out, V)
+        out = torch.stack(
+            [ov.reshape(B, M, C_out, T_out, V) for ov in out_views], dim=1
+        )
 
-        # optional strided temporal conv
-        if self.tcn_stride is not None:
-            out = self.tcn_stride(out)                    # (B·Vv·M, C_out, T_out, V)
-            out = self.tcn_relu(out)
-
-        # unfold views and persons for attention
-        C_out, T_out = out.shape[1], out.shape[2]
-        out = out.reshape(B, Vv, M, C_out, T_out, V)
-
-        # cross-view spatial attention
+        # SA stays shared across views (cross-view op)
         out = self.sa(out)
-        # temporal self-attention within view
-        out = self.ta(out)
 
-        # add outer residual (also un-flatten it)
-        res = res.reshape(B, Vv, M, C_out, T_out, V)
-        return self.out_relu(out + res)
+        # Per-view TA (each call sees just its own view)
+        out_after_ta_views = []
+        for v in range(Vv):
+            xv = out[:, v:v + 1, :, :, :, :]               # (B, 1, M, C, T, V)
+            xv = self.ta[v](xv)
+            out_after_ta_views.append(xv.squeeze(1))       # (B, M, C, T, V)
+        out_after_ta = torch.stack(out_after_ta_views, dim=1)
+
+        res = torch.stack(
+            [rv.reshape(B, M, C_out, T_out, V) for rv in res_views], dim=1
+        )
+        return self.out_relu(out_after_ta + res)
 
 
 # ------------------------------------------------------------------ smoke test

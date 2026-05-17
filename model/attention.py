@@ -280,6 +280,238 @@ class BottleneckCrossViewAttention(nn.Module):
         return out.permute(0, 4, 1, 5, 2, 3).contiguous()
 
 
+class JointCrossViewAttention(nn.Module):
+    """Cross-view attention where TOKENS ARE JOINTS, not view-channel vectors.
+
+    Diagnosis (post-phase-2): the existing `mha` SA operates **after** GCN's
+    channel-wise topology refinement, so each view's C-dim feature is already
+    an *abstraction* of the joint — direct cross-view information at the
+    geometric level (which joint is occluded in view A but visible in view B)
+    is already lost.
+
+    This module restores joint identity to the cross-view stage by treating
+    each view's `V_joints` joint embeddings as the attention sequence:
+
+        For each view i:
+            Q_i  = view i's V_joints joint tokens          (V_joints, C)
+            K, V = concat(other views' joints)            ((V_views-1)·V_joints, C)
+            F_i' = F_i + Attn(Q_i, K, V)                  per-view residual
+
+    So "view 0 joint 9 (left-wrist)" can attend to "view 1 joint 10 (right-wrist)"
+    etc.  The cross-view information flow is explicit AND retains joint-level
+    spatial structure that GCN-abstracted features have washed out.
+
+    Input  : (B, V_views, M, C, T, V_joints)
+    Output : same shape.
+    """
+
+    def __init__(self, in_dim: int, num_heads: int = 2, dropout: float = 0.0):
+        super().__init__()
+        if in_dim % num_heads != 0:
+            raise ValueError(
+                f'in_dim ({in_dim}) must be divisible by num_heads ({num_heads})'
+            )
+        self.in_dim = in_dim
+        self.num_heads = num_heads
+        self.norm = nn.LayerNorm(in_dim)
+        self.mha = nn.MultiheadAttention(
+            embed_dim=in_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, Vv, M, C, T, Vj = x.shape       # Vj = V_joints
+
+        # (B, V_views, M, C, T, V_joints) → (B, M, T, V_views, V_joints, C)
+        tokens = x.permute(0, 2, 4, 1, 5, 3).contiguous()
+        N = B * M * T
+        tokens = tokens.reshape(N, Vv, Vj, C)             # (N, V_views, V_joints, C)
+
+        # Pre-norm once (shared for Q and KV).
+        tokens_n = self.norm(tokens.reshape(N, Vv * Vj, C)).reshape(N, Vv, Vj, C)
+
+        out_pieces = []
+        for i in range(Vv):
+            q = tokens_n[:, i, :, :]                       # (N, V_joints, C)
+            other_idx = [j for j in range(Vv) if j != i]
+            kv = tokens_n[:, other_idx, :, :].reshape(
+                N, (Vv - 1) * Vj, C
+            )                                              # (N, (V_views-1)·V_joints, C)
+
+            with sdpa_kernel(_SAFE_SDP_BACKENDS):
+                attn_out, _ = self.mha(q, kv, kv, need_weights=False)
+
+            # Residual onto ORIGINAL un-normed view-i joints
+            out_pieces.append(
+                (tokens[:, i, :, :] + attn_out).unsqueeze(1)   # (N, 1, V_joints, C)
+            )
+
+        out = torch.cat(out_pieces, dim=1)                 # (N, V_views, V_joints, C)
+        out = out.reshape(B, M, T, Vv, Vj, C)
+        return out.permute(0, 3, 1, 5, 2, 4).contiguous()  # back to canonical
+
+
+class InputLevelCVA(nn.Module):
+    """Cross-view attention applied at the RAW INPUT level, before any GCN.
+
+    Diagnosis (post-phase-2): cross-view complementarity is most explicit at
+    the raw 2D-coordinate level — different cameras give literally different
+    `(x, y, score)` per joint.  Once GCN abstracts joints into C-dim features,
+    that direct geometric complementarity is mixed away.
+
+    This module sits between `data_bn` and the first block.  It projects the
+    raw 3-channel input to a higher working dimension, applies cross-view
+    attention there, and projects back with a residual.
+
+    Input  : (B, V_views, M, C_in, T, V)         e.g. C_in = 3 (x, y, score)
+    Output : same shape
+
+    The output projection is zero-initialised so the module starts as
+    Identity — gradients gradually turn it on, never disturbs training start.
+    """
+
+    def __init__(self, in_channels: int = 3, work_dim: int = 64,
+                 num_heads: int = 2, dropout: float = 0.0):
+        super().__init__()
+        self.in_channels = in_channels
+        self.work_dim = work_dim
+
+        self.proj_in  = nn.Linear(in_channels, work_dim)
+        self.attn     = PairwiseCrossViewAttention(work_dim,
+                                                   num_heads=num_heads,
+                                                   dropout=dropout)
+        self.proj_out = nn.Linear(work_dim, in_channels)
+        # Zero-init out projection → module is initially Identity (after residual).
+        nn.init.zeros_(self.proj_out.weight)
+        nn.init.zeros_(self.proj_out.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, V_views, M, C_in, T, V) — same shape in/out
+        B, Vv, M, C_in, T, V = x.shape
+
+        # Move C_in axis to last for the Linear projection
+        x_p = x.permute(0, 1, 2, 4, 5, 3).contiguous()     # (B, Vv, M, T, V, C_in)
+        x_w = self.proj_in(x_p)                            # (B, Vv, M, T, V, work_dim)
+        # Bring it back to canonical (B, Vv, M, C, T, V)
+        x_w = x_w.permute(0, 1, 2, 5, 3, 4).contiguous()
+
+        # Cross-view fusion in the working dim
+        x_w = self.attn(x_w)
+
+        # Project back to C_in
+        x_w = x_w.permute(0, 1, 2, 4, 5, 3).contiguous()   # (B, Vv, M, T, V, work_dim)
+        x_back = self.proj_out(x_w)                        # (B, Vv, M, T, V, C_in)
+        x_back = x_back.permute(0, 1, 2, 5, 3, 4).contiguous()
+
+        return x + x_back                                  # residual; zero-init → 0 at t=0
+
+
+class PostBackboneCrossAttn(nn.Module):
+    """Single cross-view attention AFTER the backbone, on pooled features.
+
+    Phase-5 Option A.  The backbone runs `sa_mode=none` (each view fully
+    independent through all 10 blocks).  Cross-view interaction happens
+    exactly once, at the pooled-feature level — after each view has
+    developed a stable representation, before the FC head.
+
+    Input  : (B, V_views, M, C)   — features already pooled over (T, V)
+    Output : same shape
+
+    Each view's pooled feature (Q) attends to the other views (K, V),
+    pre-norm + per-view residual, shared MHA weights across views.
+    """
+
+    def __init__(self, dim: int, num_heads: int = 2, dropout: float = 0.0):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.mha = nn.MultiheadAttention(dim, num_heads, dropout=dropout,
+                                         batch_first=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, Vv, M, C = x.shape
+        tokens = x.permute(0, 2, 1, 3).reshape(B * M, Vv, C)   # (B*M, V_views, C)
+        tokens_n = self.norm(tokens)
+
+        out_pieces = []
+        for i in range(Vv):
+            q = tokens_n[:, i:i + 1]                            # (B*M, 1, C)
+            other = [j for j in range(Vv) if j != i]
+            kv = tokens_n[:, other]                             # (B*M, V_views-1, C)
+            with sdpa_kernel(_SAFE_SDP_BACKENDS):
+                attn_out, _ = self.mha(q, kv, kv, need_weights=False)
+            out_pieces.append(tokens[:, i:i + 1] + attn_out)    # residual
+
+        out = torch.cat(out_pieces, dim=1)                      # (B*M, V_views, C)
+        return out.reshape(B, M, Vv, C).permute(0, 2, 1, 3).contiguous()
+
+
+class CLSCrossViewExchange(nn.Module):
+    """Per-view CLS-token cross-view exchange — Phase-5 Option C.
+
+    NOTE — deviation from the literal spec: the spec's `cls_tokens` are a bare
+    `nn.Parameter`, which would make the CLS-to-CLS attention input-independent
+    (just a learned bias).  To make the CLS token an actual *compressed view
+    representation*, this implementation uses the learnable parameter as a
+    *query* that first attention-pools its own view's feature map.  The flow:
+
+        1. aggregate : learnable CLS query[i]  attends to view-i's (T·V) tokens
+                       → per-sample summary cls_i
+        2. exchange  : cls_i cross-attends to the other views' cls tokens
+        3. broadcast : the exchanged cls_i' is added back over view-i's map
+
+    Input  : (B, V_views, M, C, T, V)
+    Output : same shape
+    """
+
+    def __init__(self, dim: int, num_views: int = 3,
+                 num_heads: int = 2, dropout: float = 0.0):
+        super().__init__()
+        self.num_views = num_views
+        self.cls_query = nn.Parameter(torch.zeros(num_views, 1, dim))
+        nn.init.normal_(self.cls_query, std=0.02)
+        self.norm_feat = nn.LayerNorm(dim)
+        self.norm_cls  = nn.LayerNorm(dim)
+        self.aggregate = nn.MultiheadAttention(dim, num_heads, dropout=dropout,
+                                               batch_first=True)
+        self.exchange  = nn.MultiheadAttention(dim, num_heads, dropout=dropout,
+                                               batch_first=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, Vv, M, C, T, V = x.shape
+        N = B * M
+
+        # 1) aggregate — each view's learnable CLS query attention-pools its
+        #    own (T·V) feature tokens into a per-sample summary.
+        cls = []
+        for i in range(Vv):
+            fi = x[:, i].permute(0, 1, 3, 4, 2).reshape(N, T * V, C)   # (N, T·V, C)
+            fi_n = self.norm_feat(fi)
+            q = self.cls_query[i].expand(N, 1, C)
+            with sdpa_kernel(_SAFE_SDP_BACKENDS):
+                ci, _ = self.aggregate(q, fi_n, fi_n, need_weights=False)
+            cls.append(ci)                                             # (N, 1, C)
+        cls = torch.cat(cls, dim=1)                                    # (N, V_views, C)
+
+        # 2) exchange — CLS tokens cross-attend across views.
+        cls_n = self.norm_cls(cls)
+        exchanged = []
+        for i in range(Vv):
+            q = cls_n[:, i:i + 1]
+            other = [j for j in range(Vv) if j != i]
+            kv = cls_n[:, other]
+            with sdpa_kernel(_SAFE_SDP_BACKENDS):
+                ei, _ = self.exchange(q, kv, kv, need_weights=False)
+            exchanged.append(cls[:, i:i + 1] + ei)                     # residual
+        exchanged = torch.cat(exchanged, dim=1)                        # (N, V_views, C)
+
+        # 3) broadcast — add the exchanged CLS back over view-i's (T, V) map.
+        bcast = exchanged.reshape(B, M, Vv, C).permute(0, 2, 1, 3)     # (B, Vv, M, C)
+        bcast = bcast.reshape(B, Vv, M, C, 1, 1)
+        return x + bcast
+
+
 class ViewFusionWeightedSum(nn.Module):
     """Lightweight alternative to `CrossViewSpatialAttention` for the SA stage.
 

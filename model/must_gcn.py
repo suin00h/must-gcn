@@ -72,7 +72,12 @@ class MUSTGCN(nn.Module):
         adaptive: bool = True,
         attn_dropout: float = 0.0,
         data_bn_mode: str = 'shared',  # 'shared' | 'per_view'
-        sa_mode: str = 'mha',          # 'mha' | 'weighted_sum' | 'none'
+        sa_mode: str = 'mha',          # see MUSTGCNBlock.SA_MODES
+        input_level_cva: bool = False, # Option 1 — prepend an InputLevelCVA between data_bn and the first block
+        view_weights: str = 'shared',  # 'shared' | 'separate'  (Option 0)
+        sa_start_block: int = 0,       # Phase-5 Option B — blocks before this index use sa_mode='none'
+        post_backbone_ca: bool = False,# Phase-5 Option A — one cross-view attn on pooled features
+        cls_cross_view: bool = False,  # Phase-5 Option C — CLS-token cross-view exchange after backbone
     ):
         super().__init__()
         Graph = import_class(graph)
@@ -106,16 +111,54 @@ class MUSTGCN(nn.Module):
                 f'data_bn_mode must be one of {self.DATA_BN_MODES}; got {data_bn_mode!r}'
             )
 
-        # 2) 10 GCN-SA-TA blocks
+        # 2) Optional input-level cross-view fusion (before the first block).
+        #    Fires only when num_views > 1.  Operates at C_in raw channels.
+        self.input_level_cva = None
+        if input_level_cva and num_views > 1:
+            from .attention import InputLevelCVA
+            self.input_level_cva = InputLevelCVA(
+                in_channels=in_channels,
+                work_dim=max(64, base_channel),
+                num_heads=num_heads if num_heads <= 4 else 2,
+                dropout=attn_dropout,
+            )
+
+        # 3) 10 GCN-SA-TA blocks.
+        #    Phase-5 Option B (`sa_start_block`): blocks with index < sa_start_block
+        #    are forced to sa_mode='none'; only the deeper blocks run cross-view SA.
         specs = _build_block_specs(in_channels, base_channel)
         self.blocks = nn.ModuleList([
             MUSTGCNBlock(in_c, out_c, A, stride=s,
                          num_heads=num_heads, adaptive=adaptive,
                          attn_dropout=attn_dropout,
-                         sa_mode=sa_mode, num_views=num_views)
-            for in_c, out_c, s in specs
+                         sa_mode=(sa_mode if i >= sa_start_block else 'none'),
+                         num_views=num_views,
+                         view_weights=view_weights)
+            for i, (in_c, out_c, s) in enumerate(specs)
         ])
         self.out_channels = specs[-1][1]                          # = base_channel * 4
+
+        # Phase-5 Option C — CLS-token cross-view exchange (operates on the
+        # full post-backbone feature map, before head pooling).
+        self.cls_cross_view = None
+        if cls_cross_view and num_views > 1:
+            from .attention import CLSCrossViewExchange
+            self.cls_cross_view = CLSCrossViewExchange(
+                self.out_channels, num_views=num_views,
+                num_heads=num_heads if num_heads <= 4 else 2,
+                dropout=attn_dropout,
+            )
+
+        # Phase-5 Option A — one cross-view attention on pooled features,
+        # between the (T, V) pool and the FC head.
+        self.post_backbone_ca = None
+        if post_backbone_ca and num_views > 1:
+            from .attention import PostBackboneCrossAttn
+            self.post_backbone_ca = PostBackboneCrossAttn(
+                self.out_channels,
+                num_heads=num_heads if num_heads <= 4 else 2,
+                dropout=attn_dropout,
+            )
 
         # 3) shared FC head (applied per view)
         self.drop_out = nn.Dropout(drop_out) if drop_out > 0 else nn.Identity()
@@ -167,12 +210,29 @@ class MUSTGCN(nn.Module):
         x = x.permute(0, 1, 5, 2, 3, 4).contiguous()              # (B, Vv, M, C, T, V)
         x = self._apply_data_bn(x)
 
+        # Optional pre-backbone cross-view fusion (input-level CVA — Option 1).
+        if self.input_level_cva is not None:
+            x = self.input_level_cva(x)
+
         for blk in self.blocks:
             x = blk(x)
         # x: (B, Vv, M, C_out, T_out, V)
 
-        # per-view pool: mean over (M, T, V) → (B, Vv, C_out)
-        x = x.mean(dim=(2, 4, 5))
+        # Phase-5 Option C — CLS cross-view exchange on the full feature map.
+        if self.cls_cross_view is not None:
+            x = self.cls_cross_view(x)
+
+        # pool over (T, V) → (B, Vv, M, C_out)
+        x = x.mean(dim=(4, 5))
+
+        # Phase-5 Option A — one cross-view attention on the pooled features.
+        if self.post_backbone_ca is not None:
+            x = self.post_backbone_ca(x)
+
+        # pool over persons M → (B, Vv, C_out)
+        # (mean over (T,V) then over M is numerically identical to mean over
+        #  (M,T,V), so with both options off this matches the original head.)
+        x = x.mean(dim=2)
 
         # shared FC head per view
         x = self.drop_out(x)
