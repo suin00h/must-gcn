@@ -21,13 +21,14 @@ The hypothesis: complementary spatial and temporal information across views narr
 - [x] HRNet 2D pose data downloaded (PYSKL release)
 - [x] 3-view coverage verified — 98.5 % of X-Sub samples have all 3 cameras
 - [x] COCO-17 graph definition
-- [x] Multi-view dataloader (group by `(S, P, R, A)`, shared temporal crop, optional 2D aug)
-- [x] GCN-SA-TA block + full MUST-GCN model (~3.86 M params)
-- [x] Training pipeline with WandB logging, AdamW + SGD-Nesterov, bf16 mixed precision
+- [x] Multi-view dataloader — UniformSample temporal sampling, single-view modes
+- [x] GCN-SA-TA block + full MUST-GCN model
+- [x] Training pipeline — WandB, SGD / AdamW, bf16, YAML configs, gradient accumulation
 - [x] Test phase with per-class CSV / confusion-matrix PNG / per-class-bar PNG / raw-logits npz artifacts
-- [x] NTU60 X-Sub full training (AdamW + SGD)
-- [x] NTU120 X-Sub full training
-- [x] Ablations: SA num_heads (1 / 2 / 4), SA = weighted_sum, per-view BN, single-view, 100-ep schedule
+- [x] CTR-GCN 2D single-view baseline
+- [x] Cross-view fusion variants — mha, cross_pair, bottleneck, joint / input / post / sparse / CLS
+- [x] NTU60 / NTU120 X-Sub training on the corrected uniform-100 pipeline
+- [ ] Cross-view fusion ablation (re-run in progress)
 - [ ] Paper writeup
 
 ## Setup
@@ -127,15 +128,16 @@ must-gcn/
 │   ├── coco17.py                          17-joint adjacency (3 partitions)
 │   └── tools.py                           graph utilities
 ├── model/
-│   ├── attention.py                       cross-view SA (MHA / weighted-sum) + temporal TA
+│   ├── attention.py                       cross-view fusion modules (mha / pairwise / bottleneck / joint / CLS) + temporal TA
 │   ├── block.py                           GCN-SA-TA block (with optional strided TCN)
 │   ├── ctrgcn_blocks.py                   CTR-GCN building blocks (vendored + split)
 │   └── must_gcn.py                        top-level MUSTGCN module
 ├── mustgcn_module.py                      LightningModule (loss, metrics, optimisers, test artifacts)
+├── ctrgcn_module.py                       CTR-GCN 2D single-view baseline LightningModule
 ├── mustgcn_datamodule.py                  LightningDataModule (X-Sub train / val / test)
-├── train.py                               training entry point (--config YAML support, --eval_only)
+├── train.py                               training entry point (--config YAML, --model_arch, --eval_only)
 ├── analyze_params.py                      hierarchical parameter-count breakdown per variant
-├── sanity_view.py                         HRNet keypoint overlay on RGB frames
+├── sanity_view.py                         HRNet skeleton overlay / multi-view animation / trajectory plots
 └── run_experiments.sh                     sequential queue runner (template — edit CONFIGS array)
 ```
 
@@ -163,7 +165,7 @@ python train.py --config configs/ntu120_xsub_1view.yaml
 python train.py --config configs/ntu120_xsub_adamw_aug.yaml --batch_size 32 --num_heads 1
 ```
 
-`train.py` accepts the usual CLI flags including `--random_rot / --random_flip / --random_shear`, `--select_camera {1,2,3}` (auto-forces `num_views=1`), `--data_bn_mode {shared,per_view}`, `--sa_mode {mha,weighted_sum,none}`, and `--num_heads N`.
+`train.py` accepts the usual CLI flags including `--random_rot / --random_flip / --random_shear`, `--select_camera {1,2,3}` (auto-forces `num_views=1`), `--data_bn_mode {shared,per_view}`, `--temporal_sampling {uniform,crop}`, `--accumulate_grad_batches N`, `--model_arch {mustgcn,ctrgcn}`, `--num_heads N`, and `--sa_mode {mha,cross_pair,cross_bottle,cross_bottle_learn,cross_bottle_gather,joint_cross,weighted_sum,none}`.
 
 ### Test only (no training)
 
@@ -190,7 +192,7 @@ Each completed test phase writes to `lightning_logs/test_output/<wandb_id>/`:
 | `per_class_acc.png` | bar chart with mean line (red = below mean, blue = at/above) |
 | `logits.npz` | raw `logits (N, K)` + `per_view (N, V_views, K)` + `labels` + `preds` |
 
-Both PNGs are also uploaded to WandB as `wandb.Image()`s under `test/confusion_matrix` and `test/per_class_acc`.
+Both PNGs are also uploaded to WandB as `wandb.Image()`s under `test/cm_image` and `test/per_class_acc_image`.
 
 ### Multiple runs back-to-back
 
