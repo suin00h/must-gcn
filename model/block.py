@@ -42,6 +42,7 @@ import torch.nn as nn
 
 from .attention import (
     BottleneckCrossViewAttention,
+    BottleneckFusionAttention,
     CrossViewSpatialAttention,
     JointCrossViewAttention,
     PairwiseCrossViewAttention,
@@ -58,12 +59,15 @@ class MUSTGCNBlock(nn.Module):
     #   mha                  — 3-token self-attention over all views (default)
     #   cross_pair           — pairwise cross-attention; view i ← {j, k} only (Option A)
     #   cross_bottle         — bottleneck cross-attn, latent = mean(views)    (Option B)
-    #   cross_bottle_learn   — bottleneck cross-attn, latent = learnable param (Option B-learn)
+    #   cross_bottle_learn   — bottleneck cross-attn, latent = STATIC learnable param
+    #                          (per-view only — no cross-view exchange; see attention.py)
+    #   cross_bottle_gather  — proper Perceiver bottleneck: latent gathers from all
+    #                          views, then views scatter from the updated latent
     #   joint_cross          — pairwise cross-attn at JOINT level; tokens = V_joints (Option 2)
     #   weighted_sum         — learnable softmax-weighted average across views
     #   none                 — identity (no cross-view fusion at this stage)
     SA_MODES = ('mha', 'cross_pair', 'cross_bottle', 'cross_bottle_learn',
-                'joint_cross', 'weighted_sum', 'none')
+                'cross_bottle_gather', 'joint_cross', 'weighted_sum', 'none')
     VIEW_WEIGHTS_MODES = ('shared', 'separate')
 
     def __init__(
@@ -138,6 +142,9 @@ class MUSTGCNBlock(nn.Module):
             self.sa = BottleneckCrossViewAttention(out_channels, num_heads=num_heads,
                                                    dropout=attn_dropout,
                                                    use_learnable_bottleneck=True)
+        elif sa_mode == 'cross_bottle_gather':
+            self.sa = BottleneckFusionAttention(out_channels, num_heads=num_heads,
+                                                dropout=attn_dropout)
         elif sa_mode == 'joint_cross':
             self.sa = JointCrossViewAttention(out_channels, num_heads=num_heads,
                                               dropout=attn_dropout)

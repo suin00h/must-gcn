@@ -102,13 +102,14 @@ def parse_args():
                    help='shared = one BN with V_views in channel index; per_view = 3 BNs')
     p.add_argument('--sa_mode',      default='mha',
                    choices=['mha', 'cross_pair', 'cross_bottle',
-                            'cross_bottle_learn', 'joint_cross',
-                            'weighted_sum', 'none'],
+                            'cross_bottle_learn', 'cross_bottle_gather',
+                            'joint_cross', 'weighted_sum', 'none'],
                    help='cross-view fusion: '
                         'mha (self-attn, default), '
                         'cross_pair (pairwise cross-attn over views), '
                         'cross_bottle (bottleneck cross-attn, mean latent), '
-                        'cross_bottle_learn (bottleneck, learnable latent), '
+                        'cross_bottle_learn (bottleneck, STATIC learnable latent — per-view only), '
+                        'cross_bottle_gather (proper Perceiver bottleneck, gather-then-scatter), '
                         'joint_cross (pairwise cross-attn, tokens = V_joints), '
                         'weighted_sum (learnable softmax avg), '
                         'or none (identity).')

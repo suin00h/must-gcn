@@ -280,6 +280,77 @@ class BottleneckCrossViewAttention(nn.Module):
         return out.permute(0, 4, 1, 5, 2, 3).contiguous()
 
 
+class BottleneckFusionAttention(nn.Module):
+    """Perceiver-style cross-view bottleneck fusion: gather, then scatter.
+
+    A *proper* attention bottleneck (cf. Nagrani et al., "Attention Bottlenecks
+    for Multimodal Fusion", NeurIPS 2021).  Unlike `BottleneckCrossViewAttention`
+    in its learnable mode — where the latent is a static `nn.Parameter` and the
+    views never communicate — here the latent is only *initialised* learnably,
+    then on every forward pass:
+
+      1. GATHER  — the latent (Q) cross-attends to all V_views (K=V) → an
+                   updated latent that aggregates information from every view.
+      2. SCATTER — each view (Q) cross-attends to that *updated* latent (K=V).
+
+    Cross-view information therefore genuinely flows  view j → latent → view i.
+
+    Input  : (B, V_views, M, C, T, V)
+    Output : same shape — drop-in replacement for `CrossViewSpatialAttention`.
+    """
+
+    def __init__(self, in_dim: int, num_heads: int = 2, dropout: float = 0.0,
+                 n_latent: int = 1):
+        super().__init__()
+        if in_dim % num_heads != 0:
+            raise ValueError(
+                f'in_dim ({in_dim}) must be divisible by num_heads ({num_heads})'
+            )
+        self.in_dim = in_dim
+        self.n_latent = n_latent
+
+        # Learnable INITIALISATION of the latent — updated from the views
+        # every forward pass by the gather step (this is the key difference
+        # from BottleneckCrossViewAttention's static learnable latent).
+        self.latent = nn.Parameter(torch.zeros(1, n_latent, in_dim))
+        nn.init.normal_(self.latent, mean=0.0, std=0.02)
+
+        self.norm_view = nn.LayerNorm(in_dim)
+        self.norm_latent = nn.LayerNorm(in_dim)
+        self.gather = nn.MultiheadAttention(in_dim, num_heads, dropout=dropout,
+                                            batch_first=True)
+        self.scatter = nn.MultiheadAttention(in_dim, num_heads, dropout=dropout,
+                                             batch_first=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, Vv, M, C, T, V = x.shape
+
+        # (B, V_views, M, C, T, V) → (N, V_views, C)  with N = B·M·T·V
+        tokens = x.permute(0, 2, 4, 5, 1, 3).contiguous()
+        N = B * M * T * V
+        tokens = tokens.reshape(N, Vv, C)
+        tokens_n = self.norm_view(tokens)
+
+        # 1) GATHER — latent (Q) attends to all views (K=V); residual update.
+        latent = self.latent.expand(N, self.n_latent, C)
+        with sdpa_kernel(_SAFE_SDP_BACKENDS):
+            gathered, _ = self.gather(latent, tokens_n, tokens_n, need_weights=False)
+        latent = latent + gathered                               # (N, n_latent, C)
+        latent_n = self.norm_latent(latent)
+
+        # 2) SCATTER — each view (Q) attends to the UPDATED latent (K=V).
+        out_pieces = []
+        for i in range(Vv):
+            q = tokens_n[:, i:i + 1]                              # (N, 1, C)
+            with sdpa_kernel(_SAFE_SDP_BACKENDS):
+                attn_out, _ = self.scatter(q, latent_n, latent_n, need_weights=False)
+            out_pieces.append(tokens[:, i:i + 1] + attn_out)      # residual
+
+        out = torch.cat(out_pieces, dim=1)                        # (N, V_views, C)
+        out = out.reshape(B, M, T, V, Vv, C)
+        return out.permute(0, 4, 1, 5, 2, 3).contiguous()
+
+
 class JointCrossViewAttention(nn.Module):
     """Cross-view attention where TOKENS ARE JOINTS, not view-channel vectors.
 
