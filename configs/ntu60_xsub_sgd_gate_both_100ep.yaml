@@ -1,0 +1,39 @@
+# I-6c — Gated cross-view (confidence × topology) · NTU60 · 100ep schedule.
+# Full schedule on the best variant from the mini-grid.  Gives the proper
+# positive-result headline number once the schedule has converged.
+
+dataset:        ntu60
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     32
+accumulate_grad_batches: 2
+num_workers:    8
+window_size:    100
+temporal_sampling: uniform
+max_person:     2
+
+num_class:      60
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+sa_mode:           none
+gated_cross_view:  both
+aux_weight:     0.3
+
+optimizer:      sgd
+base_lr:        0.1
+weight_decay:   5.0e-4
+max_epochs:     100
+warmup_epochs:  5
+step_epochs:    [50, 80]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+wandb_project:  MUST-GCN
+wandb_name:     ntu60-xsub-sgd-gate-both-100ep
+wandb_tags:     [ntu60, xsub, sgd, 100ep, I-6, gate_both, uniform100, headline_candidate]

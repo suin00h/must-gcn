@@ -64,6 +64,30 @@ def parse_name(name: str):
     return tuple(int(x) for x in m.groups())  # (S, C, P, R, A)
 
 
+# COCO-17 parent index per joint, for the bone modality (bone = joint − parent).
+# Root joint (nose) is its own parent → zero bone vector.  Spine path
+# {shoulder, hip} use nose as a proxy parent since COCO-17 lacks a neck joint.
+COCO17_PARENTS = [
+    0,   # 0  nose         ← self (root)
+    0,   # 1  L eye        ← nose
+    0,   # 2  R eye        ← nose
+    1,   # 3  L ear        ← L eye
+    2,   # 4  R ear        ← R eye
+    0,   # 5  L shoulder   ← nose
+    0,   # 6  R shoulder   ← nose
+    5,   # 7  L elbow      ← L shoulder
+    6,   # 8  R elbow      ← R shoulder
+    7,   # 9  L wrist      ← L elbow
+    8,   # 10 R wrist      ← R elbow
+    5,   # 11 L hip        ← L shoulder
+    6,   # 12 R hip        ← R shoulder
+    11,  # 13 L knee       ← L hip
+    12,  # 14 R knee       ← R hip
+    13,  # 15 L ankle      ← L knee
+    14,  # 16 R ankle      ← R knee
+]
+
+
 # COCO-17 left-right joint pairs, for horizontal flip
 # (eyes, ears, shoulders, elbows, wrists, hips, knees, ankles)
 COCO17_FLIP_PAIRS = [
@@ -97,6 +121,9 @@ class MultiviewFeeder(Dataset):
         expand_views: bool = False,             # enumerate every (group, camera) as its own item
         # ---- temporal sampling: 'uniform' (PYSKL UniformSample) or 'crop' (contiguous window)
         temporal_sampling: str = 'uniform',
+        # ---- input modality: 'joint' (default x/y), 'bone' (joint − parent),
+        #      'motion' (frame difference).  Score channel is preserved.
+        modality: str = 'joint',
     ):
         self.window_size = window_size
         self.max_person = max_person
@@ -118,6 +145,10 @@ class MultiviewFeeder(Dataset):
         if temporal_sampling not in ('uniform', 'crop'):
             raise ValueError(f"temporal_sampling must be 'uniform' or 'crop'; got {temporal_sampling!r}")
         self.temporal_sampling = temporal_sampling
+
+        if modality not in ('joint', 'bone', 'motion'):
+            raise ValueError(f"modality must be 'joint'/'bone'/'motion'; got {modality!r}")
+        self.modality = modality
 
         with open(pkl_path, 'rb') as f:
             raw = pickle.load(f)
@@ -251,6 +282,15 @@ class MultiviewFeeder(Dataset):
         # about the image centre (origin).
         if aug is not None:
             kp = self._apply_aug(kp, aug)
+
+        # ---- modality transformation (in normalised coord space)
+        if self.modality == 'bone':
+            parents = np.asarray(COCO17_PARENTS, dtype=np.int64)
+            kp = kp - kp[..., parents, :]          # (M, T, V, 2): joint − parent
+        elif self.modality == 'motion':
+            motion = np.zeros_like(kp)
+            motion[:, 1:] = kp[:, 1:] - kp[:, :-1]  # frame-to-frame difference
+            kp = motion
 
         if self.with_score:
             data = np.concatenate([kp, score[..., None]], axis=-1)   # (M, T, V, 3)

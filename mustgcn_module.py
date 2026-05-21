@@ -81,6 +81,7 @@ class MUSTGCNModule(pl.LightningModule):
         sa_start_block: int = 0,                     # Phase-5 Option B — sparse SA from this block index
         post_backbone_ca: bool = False,              # Phase-5 Option A — post-backbone cross-attention
         cls_cross_view: bool = False,                # Phase-5 Option C — CLS-token cross-view exchange
+        gated_cross_view: str = 'off',               # I-6 — gated sparse cross-view transmission
         # loss
         aux_weight: float = 0.3,
         # optimisation
@@ -115,6 +116,7 @@ class MUSTGCNModule(pl.LightningModule):
             sa_start_block=sa_start_block,
             post_backbone_ca=post_backbone_ca,
             cls_cross_view=cls_cross_view,
+            gated_cross_view=gated_cross_view,
         )
         self.ce = nn.CrossEntropyLoss()
 

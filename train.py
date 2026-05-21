@@ -70,6 +70,8 @@ def parse_args():
                    help='output clip length T (= UniformSample clip_len)')
     p.add_argument('--temporal_sampling', default='uniform', choices=['uniform', 'crop'],
                    help='uniform = PYSKL UniformSample (whole-clip, bin-per-frame); crop = contiguous window')
+    p.add_argument('--modality', default='joint', choices=['joint', 'bone', 'motion'],
+                   help='input modality: joint (x,y; default), bone (joint−parent), motion (frame difference)')
     p.add_argument('--max_person',  type=int, default=2)
     p.add_argument('--no_score',    action='store_true',
                    help='drop the HRNet keypoint score channel (in_channels = 2 instead of 3)')
@@ -123,6 +125,11 @@ def parse_args():
                    help='Phase-5 Option A: one cross-view attention on pooled features, between the (T,V) pool and the FC head.')
     p.add_argument('--cls_cross_view', action='store_true',
                    help='Phase-5 Option C: per-view CLS-token cross-view exchange after the backbone.')
+    p.add_argument('--gated_cross_view', default='off',
+                   choices=['off', 'conf', 'topo', 'both', 'conf_topk'],
+                   help='I-6: gated sparse cross-view transmission post-backbone. '
+                        'conf = (1−HRNet score), same joint; topo = skeletal adjacency, no conf; '
+                        'both = adjacency × confidence; conf_topk = conf masked to top-k joints.')
 
     # ---------------- loss
     p.add_argument('--aux_weight', type=float, default=0.3,
@@ -241,6 +248,7 @@ def main():
             sa_start_block=args.sa_start_block,
             post_backbone_ca=args.post_backbone_ca,
             cls_cross_view=args.cls_cross_view,
+            gated_cross_view=args.gated_cross_view,
             aux_weight=args.aux_weight,
             optimizer=args.optimizer,
             base_lr=args.base_lr,
@@ -269,6 +277,7 @@ def main():
         squeeze_view=args.squeeze_view,
         expand_views=args.expand_views,
         temporal_sampling=args.temporal_sampling,
+        modality=args.modality,
     )
 
     # ---------------- logger

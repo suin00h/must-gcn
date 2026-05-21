@@ -53,6 +53,8 @@ class MUSTGCNDataModule(pl.LightningDataModule):
         expand_views: bool = False,                   # TRAIN only: enumerate (group, cam) as separate items
         # temporal sampling: 'uniform' (PYSKL UniformSample) or 'crop' (contiguous window)
         temporal_sampling: str = 'uniform',
+        # input modality: 'joint' (default x/y) | 'bone' (joint − parent) | 'motion' (frame diff)
+        modality: str = 'joint',
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -80,6 +82,7 @@ class MUSTGCNDataModule(pl.LightningDataModule):
             squeeze_view=hp.squeeze_view,
             expand_views=hp.expand_views,
             temporal_sampling=hp.temporal_sampling,
+            modality=hp.modality,
         )
         self.val_set = MultiviewFeeder(
             pkl_path=self.pkl_path,
@@ -93,6 +96,7 @@ class MUSTGCNDataModule(pl.LightningDataModule):
             squeeze_view=hp.squeeze_view,
             expand_views=False,
             temporal_sampling=hp.temporal_sampling,
+            modality=hp.modality,
         )
 
     def _loader(self, ds, shuffle: bool, drop_last: bool) -> DataLoader:

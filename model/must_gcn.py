@@ -78,6 +78,7 @@ class MUSTGCN(nn.Module):
         sa_start_block: int = 0,       # Phase-5 Option B — blocks before this index use sa_mode='none'
         post_backbone_ca: bool = False,# Phase-5 Option A — one cross-view attn on pooled features
         cls_cross_view: bool = False,  # Phase-5 Option C — CLS-token cross-view exchange after backbone
+        gated_cross_view: str = 'off', # I-6 — gated sparse cross-view transmission: off|conf|topo|both
     ):
         super().__init__()
         Graph = import_class(graph)
@@ -160,6 +161,14 @@ class MUSTGCN(nn.Module):
                 dropout=attn_dropout,
             )
 
+        # I-6 — gated sparse cross-view transmission on per-joint post-T-pool
+        # features, with a per-(view, joint) gate (HRNet confidence) and/or a
+        # skeletal-adjacency mask.  See attention.GatedCrossViewTransmission.
+        self.gated_cross_view = None
+        if gated_cross_view != 'off' and num_views > 1:
+            from .attention import GatedCrossViewTransmission
+            self.gated_cross_view = GatedCrossViewTransmission(A, gate_kind=gated_cross_view)
+
         # 3) shared FC head (applied per view)
         self.drop_out = nn.Dropout(drop_out) if drop_out > 0 else nn.Identity()
         self.fc = nn.Linear(self.out_channels, num_class)
@@ -207,6 +216,15 @@ class MUSTGCN(nn.Module):
         assert V  == self.num_point,   f'V: expected {self.num_point}, got {V}'
         assert M  == self.num_person,  f'M: expected {self.num_person}, got {M}'
 
+        # Extract HRNet confidence from channel 2 *before* data_bn, for
+        # confidence-gated cross-view transmission (I-6).  Pool over T to
+        # get a per-(view, person, joint) confidence summary.
+        conf_pool = None
+        if self.gated_cross_view is not None and C >= 3:
+            # x is still (B, Vv, C, T, V, M); channel 2 = HRNet score
+            conf_pool = x[:, :, 2, :, :, :].mean(dim=2)            # → (B, Vv, V, M)
+            conf_pool = conf_pool.permute(0, 1, 3, 2).contiguous() # → (B, Vv, M, V)
+
         x = x.permute(0, 1, 5, 2, 3, 4).contiguous()              # (B, Vv, M, C, T, V)
         x = self._apply_data_bn(x)
 
@@ -222,8 +240,15 @@ class MUSTGCN(nn.Module):
         if self.cls_cross_view is not None:
             x = self.cls_cross_view(x)
 
-        # pool over (T, V) → (B, Vv, M, C_out)
-        x = x.mean(dim=(4, 5))
+        # pool over T → (B, Vv, M, C_out, V).  If gated_cross_view is active
+        # we apply it per joint here, then pool V.  Otherwise we pool (T, V)
+        # together as before — numerically identical to the original head.
+        if self.gated_cross_view is not None:
+            x = x.mean(dim=4)                                      # (B, Vv, M, C_out, V)
+            x = self.gated_cross_view(x, conf_pool)
+            x = x.mean(dim=4)                                      # (B, Vv, M, C_out)
+        else:
+            x = x.mean(dim=(4, 5))                                 # original pool(T, V)
 
         # Phase-5 Option A — one cross-view attention on the pooled features.
         if self.post_backbone_ca is not None:

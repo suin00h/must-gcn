@@ -1,0 +1,40 @@
+# I-6c — Gated cross-view transmission: confidence × topology.
+# Backbone runs sa_mode=none; post-backbone module adds
+#   x ← x + alpha · (1 − HRNet_conf) · sum_{j: A[i,j]>0} A_norm[i,j] · mean_of_other_views_at_j.
+# Fires only on low-confidence joints, only from skeletal neighbours.
+
+dataset:        ntu60
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     32
+accumulate_grad_batches: 2
+num_workers:    8
+window_size:    100
+temporal_sampling: uniform
+max_person:     2
+
+num_class:      60
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+sa_mode:           none
+gated_cross_view:  both
+aux_weight:     0.3
+
+optimizer:      sgd
+base_lr:        0.1
+weight_decay:   5.0e-4
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+wandb_project:  MUST-GCN
+wandb_name:     ntu60-xsub-sgd-gate-both-65ep
+wandb_tags:     [ntu60, xsub, sgd, 65ep, I-6, gate_both, uniform100]

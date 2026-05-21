@@ -1,0 +1,39 @@
+# I-6c — Gated cross-view transmission: confidence × topology · NTU120 · 65ep.
+# Cross-dataset confirmation of the best variant from the NTU60 mini-grid
+# (gate_both = 92.40, +0.20 over none).
+
+dataset:        ntu120
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     32
+accumulate_grad_batches: 2
+num_workers:    8
+window_size:    100
+temporal_sampling: uniform
+max_person:     2
+
+num_class:      120
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+sa_mode:           none
+gated_cross_view:  both
+aux_weight:     0.3
+
+optimizer:      sgd
+base_lr:        0.1
+weight_decay:   5.0e-4
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+wandb_project:  MUST-GCN
+wandb_name:     ntu120-xsub-sgd-gate-both-65ep
+wandb_tags:     [ntu120, xsub, sgd, 65ep, I-6, gate_both, uniform100]

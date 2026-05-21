@@ -1,0 +1,40 @@
+# I-5 — Bone stream · NTU60 · 65 ep, sa_mode=none.
+# Replaces (x, y) with bone vectors (joint − parent on the COCO-17 tree),
+# score channel preserved.  Standard multi-stream skeleton-HAR practice.
+# Will be compared / ensembled with the joint stream (none = 92.20).
+
+dataset:        ntu60
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     32
+accumulate_grad_batches: 2
+num_workers:    8
+window_size:    100
+temporal_sampling: uniform
+modality:       bone
+max_person:     2
+
+num_class:      60
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+sa_mode:        none
+aux_weight:     0.3
+
+optimizer:      sgd
+base_lr:        0.1
+weight_decay:   5.0e-4
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+wandb_project:  MUST-GCN
+wandb_name:     ntu60-xsub-sgd-none-bone-65ep
+wandb_tags:     [ntu60, xsub, sgd, 65ep, I-5, modality_bone, sa_none, uniform100]

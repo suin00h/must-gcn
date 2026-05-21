@@ -29,6 +29,7 @@ projection applies to every view's token, satisfying the
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -613,6 +614,75 @@ class ViewFusionWeightedSum(nn.Module):
 
 
 # ------------------------------------------------------------------ smoke test
+
+
+class GatedCrossViewTransmission(nn.Module):
+    """Sparse, gated cross-view feature transmission — applied post-backbone,
+    per joint.  For each (view v, joint i), a 'donor' is computed from the
+    *other* views' features at *related* joints (selected by adjacency), and
+    added to the target feature scaled by a per-(view, joint) gate.
+
+    `gate_kind`:
+      - 'conf' — adjacency = I (same joint across views); gate = (1 − HRNet conf).
+                 Fires only on low-confidence joints; no joint-level coupling.
+      - 'topo' — adjacency = A (skeletal neighbours across views); gate = 1.
+                 Fires always but only between adjacent joints (structural sparsity).
+      - 'both' — adjacency = A; gate = (1 − HRNet conf).
+                 Fires only on low-confidence joints, only from adjacent joints.
+
+    Inputs:
+      x    : (B, V_views, M, C, V_joints) — features after T-pool, per joint per view.
+      conf : (B, V_views, M, V_joints)    — per-joint confidence (HRNet score, T-pooled);
+                                            may be None, in which case the gate
+                                            degenerates to 1 for non-'topo' modes.
+    Output: same shape as x.
+
+    A learnable scalar `alpha` (init 0) gates the whole module to a no-op at
+    initialisation, so training can choose how strongly to use it.
+    """
+
+    def __init__(self, A: np.ndarray, gate_kind: str = 'conf', top_k: int = 5):
+        super().__init__()
+        if gate_kind not in ('conf', 'topo', 'both', 'conf_topk'):
+            raise ValueError(
+                f"gate_kind must be 'conf'/'topo'/'both'/'conf_topk'; got {gate_kind!r}"
+            )
+        self.gate_kind = gate_kind
+        # 'conf_topk' uses the conf adjacency (same joint across views) but
+        # additionally hard-masks the gate to only the top-k highest-(1-conf)
+        # joints per (sample, view, person) — most aggressive sparse selectivity.
+        self.top_k = top_k if gate_kind == 'conf_topk' else None
+        V = A.shape[-1]
+        if gate_kind in ('conf', 'conf_topk'):
+            A_eff = np.eye(V, dtype=np.float32)             # same joint across views
+        else:
+            A_eff = (A.sum(axis=0) > 0).astype(np.float32)  # binary union of A subsets
+            np.fill_diagonal(A_eff, 0.0)                    # neighbours only — no self
+        deg = A_eff.sum(axis=1, keepdims=True)
+        A_eff = A_eff / np.maximum(deg, 1.0)                # row-normalise
+        self.register_buffer('A_eff', torch.from_numpy(A_eff))    # (V, V)
+        self.alpha = nn.Parameter(torch.zeros(1))                 # zero-init → no-op start
+
+    def forward(self, x, conf=None):
+        # x: (B, V_views, M, C, V)
+        B, Vv, M, C, V = x.shape
+        # mean of *other* views per (joint, channel)
+        x_sum = x.sum(dim=1, keepdim=True)                        # (B, 1, M, C, V)
+        x_others = (x_sum - x) / max(Vv - 1, 1)                   # (B, Vv, M, C, V)
+        # donor[..., i] = sum_j A_eff[i, j] · x_others[..., j]
+        donor = torch.einsum('bvmcj,ij->bvmci', x_others, self.A_eff)
+        # gate
+        if self.gate_kind == 'topo' or conf is None:
+            g = 1.0
+        else:
+            g = (1.0 - conf)                                      # (B, Vv, M, V)
+            if self.top_k is not None:
+                # hard-mask to the top-k highest-gate joints per (B, Vv, M)
+                _, idx = g.topk(min(self.top_k, V), dim=-1)       # (B, Vv, M, k)
+                mask = torch.zeros_like(g).scatter_(-1, idx, 1.0) # (B, Vv, M, V) binary
+                g = g * mask
+            g = g.unsqueeze(3)                                    # (B, Vv, M, 1, V)
+        return x + self.alpha * g * donor
 
 
 if __name__ == '__main__':
