@@ -1,6 +1,6 @@
 # MUST-GCN · NTU120 X-Sub · AdamW · 65 ep · NO aug · cross_pair, h=1
 #
-# B-priority fill — mirrors `ntu60_xsub_adamw_crosspair_h1.yaml` on NTU120,
+# B-priority fill — mirrors `ntu60_xsub_sgd_crosspair_h1.yaml` on NTU120,
 # so the SA-heads sensitivity for cross_pair can be read on both datasets.
 
 dataset:        ntu120
@@ -22,7 +22,7 @@ sa_mode:        cross_pair
 
 aux_weight:     0.3
 
-optimizer:      adamw
+optimizer:      sgd
 base_lr:        3.0e-4
 weight_decay:   1.0e-2
 
@@ -37,5 +37,5 @@ precision:      bf16-mixed
 log_dir:        ./lightning_logs
 
 wandb_project:  MUST-GCN
-wandb_name:     ntu120-xsub-adamw-crosspair-h1-65ep
-wandb_tags:     [ntu120, xsub, adamw, 65ep, ablation, sa_cross_pair, h1]
+wandb_name:     ntu120-xsub-sgd-crosspair-h1-65ep
+wandb_tags:     [ntu120, xsub, sgd, 65ep, ablation, sa_cross_pair, h1, uniform100]

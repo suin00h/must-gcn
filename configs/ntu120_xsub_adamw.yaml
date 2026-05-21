@@ -27,7 +27,7 @@ attn_dropout: 0.0
 aux_weight: 0.3
 
 # --- optimisation
-optimizer:    adamw
+optimizer:    sgd
 base_lr:      3.0e-4
 weight_decay: 1.0e-2
 
@@ -45,5 +45,5 @@ log_dir:   ./lightning_logs
 
 # --- WandB
 wandb_project: MUST-GCN
-wandb_name:    ntu120-xsub-adamw-65ep
-wandb_tags:    [ntu120, xsub, adamw, 65ep, baseline]
+wandb_name:    ntu120-xsub-sgd-65ep
+wandb_tags:    [ntu120, xsub, sgd, 65ep, baseline, uniform100]

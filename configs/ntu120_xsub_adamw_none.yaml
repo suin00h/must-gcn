@@ -1,6 +1,6 @@
 # MUST-GCN · NTU120 X-Sub · AdamW · 65 ep · NO aug · SA = Identity
 #
-# D-priority fill — NTU120 mirror of `ntu60_xsub_adamw_none.yaml`.
+# D-priority fill — NTU120 mirror of `ntu60_xsub_sgd_none.yaml`.
 
 dataset:        ntu120
 train_split:    xsub_train
@@ -21,7 +21,7 @@ sa_mode:        none
 
 aux_weight:     0.3
 
-optimizer:      adamw
+optimizer:      sgd
 base_lr:        3.0e-4
 weight_decay:   1.0e-2
 
@@ -36,5 +36,5 @@ precision:      bf16-mixed
 log_dir:        ./lightning_logs
 
 wandb_project:  MUST-GCN
-wandb_name:     ntu120-xsub-adamw-none-65ep
-wandb_tags:     [ntu120, xsub, adamw, 65ep, ablation, sa_none]
+wandb_name:     ntu120-xsub-sgd-none-65ep
+wandb_tags:     [ntu120, xsub, sgd, 65ep, ablation, sa_none, uniform100]

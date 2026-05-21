@@ -1,6 +1,6 @@
 # MUST-GCN · NTU120 X-Sub · AdamW · 65 ep · NO aug · SA = bottleneck (mean)
 #
-# Option B (mean variant) on NTU120.  Pairs with `ntu120_xsub_adamw.yaml`
+# Option B (mean variant) on NTU120.  Pairs with `ntu120_xsub_sgd.yaml`
 # (no-aug baseline, 80.09 %) for direct comparison.
 
 # --- data
@@ -26,7 +26,7 @@ sa_mode:        cross_bottle
 aux_weight:     0.3
 
 # --- optimisation
-optimizer:      adamw
+optimizer:      sgd
 base_lr:        3.0e-4
 weight_decay:   1.0e-2
 
@@ -44,5 +44,5 @@ log_dir:        ./lightning_logs
 
 # --- WandB
 wandb_project:  MUST-GCN
-wandb_name:     ntu120-xsub-adamw-crossbottle-mean-65ep
-wandb_tags:     [ntu120, xsub, adamw, 65ep, ablation, sa_cross_bottle, mean]
+wandb_name:     ntu120-xsub-sgd-crossbottle-mean-65ep
+wandb_tags:     [ntu120, xsub, sgd, 65ep, ablation, sa_cross_bottle, mean, uniform100]

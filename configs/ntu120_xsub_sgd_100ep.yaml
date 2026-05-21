@@ -51,4 +51,4 @@ log_dir:        ./lightning_logs
 # --- WandB
 wandb_project:  MUST-GCN
 wandb_name:     ntu120-xsub-sgd-100ep
-wandb_tags:     [ntu120, xsub, sgd, 100ep, long]
+wandb_tags:     [ntu120, xsub, sgd, 100ep, long, uniform100]

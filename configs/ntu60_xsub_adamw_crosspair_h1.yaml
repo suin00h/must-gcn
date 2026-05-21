@@ -27,7 +27,7 @@ sa_mode:        cross_pair
 aux_weight:     0.3
 
 # --- optimisation
-optimizer:      adamw
+optimizer:      sgd
 base_lr:        3.0e-4
 weight_decay:   1.0e-2
 
@@ -45,5 +45,5 @@ log_dir:        ./lightning_logs
 
 # --- WandB
 wandb_project:  MUST-GCN
-wandb_name:     ntu60-xsub-adamw-crosspair-h1-65ep
-wandb_tags:     [ntu60, xsub, adamw, 65ep, ablation, sa_cross_pair, h1]
+wandb_name:     ntu60-xsub-sgd-crosspair-h1-65ep
+wandb_tags:     [ntu60, xsub, sgd, 65ep, ablation, sa_cross_pair, h1, uniform100]
