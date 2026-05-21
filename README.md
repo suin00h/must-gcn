@@ -14,7 +14,7 @@ Each MUST-GCN block is a `GCN → SA → TA` cycle:
 - **SA** — cross-view spatial attention: at every spatio-temporal cell, each view's feature attends to the other two views.
 - **TA** — temporal self-attention within view, replacing CTR-GCN's multi-scale temporal convolution.
 
-The hypothesis: complementary spatial and temporal information across views narrows the gap between 2D- and 3D-skeleton HAR, without depending on depth sensors.
+The hypothesis was: complementary spatial and temporal information across views narrows the gap between 2D- and 3D-skeleton HAR.  Empirically, **dense per-block cross-view attention contaminates and consistently underperforms late logit fusion** on both NTU60 and NTU120 (12+ variants tested, including the proper Perceiver gather-scatter bottleneck).  The variant that finally *does* beat late fusion is **confidence-gated, occlusion-driven *selective* cross-view transmission** — sparse fusion that fires only on joints HRNet flagged as uncertain (preliminary, single dataset).
 
 ## Status
 
@@ -28,7 +28,11 @@ The hypothesis: complementary spatial and temporal information across views narr
 - [x] CTR-GCN 2D single-view baseline
 - [x] Cross-view fusion variants — mha, cross_pair, bottleneck, joint / input / post / sparse / CLS
 - [x] NTU60 / NTU120 X-Sub training on the corrected uniform-100 pipeline
-- [ ] Cross-view fusion ablation (re-run in progress)
+- [x] Cross-view fusion ablation (NTU60 + NTU120) — every dense fusion variant loses to `none` (late logit averaging); even the proper Perceiver gather-scatter bottleneck loses
+- [x] Confidence-gated selective cross-view transmission (NTU60, preliminary) — **92.33 % > `none` 92.20 %**; topology-only sparsity *hurts*, so confidence (occlusion) is the active ingredient
+- [x] Headline on the corrected pipeline: **NTU60 92.67 %** (`none` @ 100 ep); NTU120 100-ep run in progress
+- [ ] NTU120 confirmation of confidence-gated transmission
+- [ ] Bone + motion multi-stream
 - [ ] Paper writeup
 
 ## Setup
