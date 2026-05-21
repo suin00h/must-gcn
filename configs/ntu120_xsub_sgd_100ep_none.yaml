@@ -1,0 +1,54 @@
+# MUST-GCN · NTU120 X-Sub · SGD-Nesterov · 100 ep · NO aug · SA = Identity
+#
+# Headline-candidate config for NTU120.  See `ntu60_xsub_sgd_long_none.yaml`
+# for the rationale (combines SGD + 100 ep + sa_mode=none).
+#
+# Pairs against:
+#   ntu120_xsub_sgd_100ep.yaml       (same recipe, sa_mode=mha) → 81.06 %
+#   ntu120_xsub_adamw_none.yaml      (same recipe, AdamW + 65 ep) → 80.46 %
+#   ntu120_xsub_sgd.yaml             (same recipe, mha + 65 ep) → 80.89 %
+
+# --- data
+dataset:        ntu120
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     32
+accumulate_grad_batches: 2
+num_workers:    8
+window_size:    100
+max_person:     2
+
+# --- model
+num_class:      120
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      4
+data_bn_mode:   shared
+sa_mode:        none
+
+# --- loss
+aux_weight:     0.3
+
+# --- optimisation
+optimizer:      sgd
+base_lr:        0.1
+weight_decay:   5.0e-4
+
+# --- schedule (extended)
+max_epochs:     100
+warmup_epochs:  5
+step_epochs:    [50, 80]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+# --- trainer
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+# --- WandB
+wandb_project:  MUST-GCN
+wandb_name:     ntu120-xsub-sgd-100ep-none
+wandb_tags:     [ntu120, xsub, sgd, 100ep, long, ablation, sa_none, headline_candidate, uniform100]

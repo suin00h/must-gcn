@@ -1,0 +1,37 @@
+# Option A — CTR-GCN 2D pipeline baseline · NTU120 X-Sub.
+# NTU120 counterpart of ntu60_ctrgcn_2d_allcam_uniform.yaml: UniformSample
+# (clip_len=100) + the full all-camera training set (~63k samples).
+
+model_arch:        ctrgcn
+dataset:           ntu120
+train_split:       xsub_train
+val_split:         xsub_val
+expand_views:      true            # TRAIN: all 3 cameras pooled (~63k)
+select_camera:     2               # VAL/TEST: camera 2 (frontal)
+squeeze_view:      true
+temporal_sampling: uniform
+batch_size:        128
+num_workers:       4
+window_size:       100
+max_person:        2
+
+num_class:         120
+num_point:         17
+graph:             graph.coco17.Graph
+base_channel:      64
+
+optimizer:         sgd
+base_lr:           0.1
+weight_decay:      5.0e-4
+lr_schedule:       cosine
+max_epochs:        80
+warmup_epochs:     5
+grad_clip:         1.0
+
+gpus:              1
+precision:         bf16-mixed
+log_dir:           ./lightning_logs
+
+wandb_project:     MUST-GCN
+wandb_name:        ntu120-ctrgcn-2d-allcam-uniform-100
+wandb_tags:        [ntu120, xsub, ctrgcn, baseline, 2d, optionA, uniform, allcam, uniform100]

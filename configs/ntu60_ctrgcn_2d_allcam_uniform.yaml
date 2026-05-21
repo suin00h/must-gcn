@@ -1,0 +1,46 @@
+# Option A — CTR-GCN 2D pipeline-validation gate.
+#
+# Goal: reproduce PYSKL's published ~92% NTU60 X-Sub by matching the standard
+# pipeline — UniformSample (clip_len=100) temporal sampling + the full
+# all-camera training set (~40k samples, the standard NTU60 X-Sub protocol).
+#
+# If test_acc1 lands near 92%, our data/training pipeline is validated and the
+# whole cross-view ablation can be re-run on a competitive backbone.  If it
+# stalls well below, the pipeline still has a problem worth finding first.
+#
+# (VAL/TEST is camera 2 only — the frontal view, restricted to 3-view-complete
+#  groups — so this is a near-comparison to PYSKL's all-3-cam val, not exact.)
+
+model_arch:        ctrgcn
+dataset:           ntu60
+train_split:       xsub_train
+val_split:         xsub_val
+expand_views:      true            # TRAIN: all 3 cameras pooled (~40k, = PYSKL)
+select_camera:     2               # VAL/TEST: camera 2 (frontal)
+squeeze_view:      true
+temporal_sampling: uniform         # PYSKL UniformSample / CTR-GCN-style span resample
+batch_size:        128
+num_workers:       4
+window_size:       100             # = PYSKL clip_len
+max_person:        2
+
+num_class:         60
+num_point:         17
+graph:             graph.coco17.Graph
+base_channel:      64
+
+optimizer:         sgd
+base_lr:           0.1
+weight_decay:      5.0e-4          # match PYSKL (was 4e-4)
+lr_schedule:       cosine
+max_epochs:        80
+warmup_epochs:     5
+grad_clip:         1.0
+
+gpus:              1
+precision:         bf16-mixed
+log_dir:           ./lightning_logs
+
+wandb_project:     MUST-GCN
+wandb_name:        ntu60-ctrgcn-2d-allcam-uniform-100
+wandb_tags:        [ntu60, xsub, ctrgcn, baseline, 2d, optionA, uniform, allcam, uniform100]
