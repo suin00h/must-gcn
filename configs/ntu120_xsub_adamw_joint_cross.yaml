@@ -1,0 +1,38 @@
+# MUST-GCN · NTU120 X-Sub · AdamW · 65 ep · NO aug · SA = joint-level cross-view (Option 2)
+
+dataset:        ntu120
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    8
+window_size:    64
+max_person:     2
+
+num_class:      120
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      2
+data_bn_mode:   shared
+sa_mode:        joint_cross
+
+aux_weight:     0.3
+
+optimizer:      sgd
+base_lr:        3.0e-4
+weight_decay:   1.0e-2
+
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+wandb_project:  MUST-GCN
+wandb_name:     ntu120-xsub-sgd-joint-cross-65ep
+wandb_tags:     [ntu120, xsub, sgd, 65ep, ablation, sa_joint_cross, option2, uniform100]

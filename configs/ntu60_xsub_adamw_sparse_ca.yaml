@@ -1,0 +1,45 @@
+# MUST-GCN · NTU60 X-Sub · AdamW · 65 ep · NO aug · Phase-5 Option B
+#
+# Sparse block cross-attention.  Blocks 0-7 run sa_mode=none; blocks 8-9 run
+# pairwise cross-view attention (cross_pair).  Per-block fusion only where
+# features are most semantically rich.
+#
+# Success criterion: beats `none` baseline (88.45 %) on NTU60 X-Sub.
+
+dataset:        ntu60
+train_split:    xsub_train
+val_split:      xsub_val
+batch_size:     64
+num_workers:    4
+window_size:    64
+max_person:     2
+
+num_class:      60
+num_point:      17
+num_views:      3
+graph:          graph.coco17.Graph
+base_channel:   64
+num_heads:      2
+data_bn_mode:   shared
+sa_mode:        cross_pair         # used only at blocks >= sa_start_block
+sa_start_block: 8                  # <— Option B: SA active only at blocks 8, 9
+
+aux_weight:     0.3
+
+optimizer:      sgd
+base_lr:        3.0e-4
+weight_decay:   1.0e-2
+
+max_epochs:     65
+warmup_epochs:  5
+step_epochs:    [35, 55]
+lr_decay_rate:  0.1
+grad_clip:      1.0
+
+gpus:           1
+precision:      bf16-mixed
+log_dir:        ./lightning_logs
+
+wandb_project:  MUST-GCN
+wandb_name:     ntu60-xsub-sgd-sparse-ca-65ep
+wandb_tags:     [ntu60, xsub, sgd, 65ep, phase5, sparse_ca, optionB, uniform100]
